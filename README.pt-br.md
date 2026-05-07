@@ -239,7 +239,7 @@ Substitua sua pasta `Chiral-Network-x.y.z-x64/` existente por inteiro
 — nenhuma migração de settings é necessária; dados do usuário ficam
 em `%APPDATA%/Roundtrip/` e sobrevivem entre versões.
 
-O build atual de tester pre-alpha é **0.5.0-dev50**. Veja
+O build atual de tester pre-alpha é **0.5.0-dev51**. Veja
 [`CHANGELOG.md`](CHANGELOG.md) para o histórico completo de versões.
 
 ---

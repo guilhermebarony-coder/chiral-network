@@ -13,6 +13,86 @@ bumps may break disk format).
 
 ---
 
+## [0.5.0-dev51] — 2026-05-07 — **Wizard polish: aligned timeline, always-visible AE picker, balanced rows**
+
+Three follow-ups from the dev50 wizard pass — small alignment and
+discoverability fixes that take the setup from "looks pro" to
+"feels pro".
+
+### Changed — progress timeline labels are now centered
+
+The `01 / 02 / 03 / 04` labels under the energy bar were
+left-aligned within their grid cells, which read fine in the
+mockup but drifted off-center as soon as the localized strings
+varied in length (English fits one width, Portuguese another).
+dev51: `text-align: center` so each label sits visually under its
+own segment regardless of text content. Spacing between bar and
+labels bumped from 6 → 8 px to make the relationship feel
+intentional rather than cramped.
+
+### Changed — AE selection always shows, even with one install
+
+dev50 hid the version dropdown when only one AE was detected and
+auto-picked the newest year. Tester feedback: the auto-pick felt
+too fast — users want a beat to confirm or override. dev51:
+
+- The AE version row is **always visible** on Step 1, regardless
+  of detected count.
+- Header copy adapts: 0 detected → "No After Effects install
+  detected", 1 → "After Effects detected", 2+ → "Multiple After
+  Effects installs detected".
+- A dedicated **Browse…** button sits next to the dropdown for
+  portable AE builds, custom install paths, dev/beta installs,
+  or anything our `Adobe After Effects YYYY` glob missed. The
+  dedicated button (vs. an in-dropdown "Browse manually…" entry)
+  avoids the click-doesn't-fire-`change` edge case when the
+  dropdown's already on that option (zero-detected case).
+- When zero versions are detected, the dropdown shows a disabled
+  "— No installs found —" placeholder and the Browse button
+  becomes the primary affordance.
+- Manually-picked paths are added to `state.aeVersions` (deduped
+  against the detected list), labelled by year if the path
+  matches the canonical Adobe install layout, else "Custom: \<tail
+  folder\>". They survive a Step-4 "Re-check" — `runDetect()`
+  now **merges** rather than overwrites.
+
+### Changed — checklist rows align column-for-column
+
+Row layout in dev50 used `margin-left: auto` on both the inline
+install button and the detail span; whichever rendered first
+absorbed the leftover flex space, so the gap between status
+checkmark / `[VENDORED]` pill / detail varied row-by-row. dev51
+makes the label `flex: 1` so it owns the slack, then puts the
+right-side cluster (button + detail) in their natural document
+order with explicit `flex: 0 0 auto` — every row's right cluster
+is now flush-right at the same x-position, every label starts
+at the same x-position, and the `[VENDORED]` pills sit at a
+consistent offset from their label text on every row that has
+one.
+
+Also: rows get a `min-height: 34px` floor so the icon-only state
+(while detection is still running, "…") doesn't pop in shorter
+than the populated state. Pill is centered inside the label via
+the label's own `inline-flex; align-items: center`.
+
+### Files
+
+- `app/wizard.html`: progress label centering, full checklist
+  layout rewrite, dedicated Browse button + styles for the AE
+  controls strip.
+- `app/wizard.js`: `populateAeVersionDropdown()` always renders;
+  zero-detected case shows a disabled placeholder; Browse handler
+  is its own click listener (no in-dropdown 'manual' value);
+  `runDetect()` merges fresh versions with carryover.
+- `app/package.json`: dev50 → dev51.
+- `README.md` / `README.pt-br.md`: tester-build pointer.
+- `CHANGELOG.md`: this entry.
+
+149/149 tests passing — all changes are in renderer markup/CSS
+and wizard glue; no main-process or library code touched.
+
+---
+
 ## [0.5.0-dev50] — 2026-05-07 — **UI overhaul, manual AE selection & bilingual docs**
 
 First public-facing pass after the GitHub push. Three threads:

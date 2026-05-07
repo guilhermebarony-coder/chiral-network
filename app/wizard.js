@@ -75,10 +75,20 @@ async function runDetect() {
     state.detect = r;
 
     // After Effects — hard requirement, so 'fail' if nothing available.
-    // dev50 — surface ALL detected versions; if more than one, reveal the
-    // dropdown and bind it. Default selection: state.aePath (if it matches
-    // a detected install — edit mode) else versions[0] (newest).
-    state.aeVersions = (r.ae && Array.isArray(r.ae.versions)) ? r.ae.versions : [];
+    // dev50 — surface ALL detected versions; the dropdown is always
+    // visible (dev51), with a Browse… button for manual picks.
+    // Default selection: state.aePath (if it matches a detected install
+    // — edit mode) else versions[0] (newest).
+    //
+    // dev51 — re-detect (Step-4 Re-check, edit-mode boot) MUST NOT wipe
+    // user-added manual entries. Merge: detected versions first
+    // (newest-first), then any prior manual entries not represented.
+    {
+        const fresh = (r.ae && Array.isArray(r.ae.versions)) ? r.ae.versions : [];
+        const freshPaths = new Set(fresh.map(v => v.path));
+        const carry = (state.aeVersions || []).filter(v => !freshPaths.has(v.path));
+        state.aeVersions = fresh.concat(carry);
+    }
     populateAeVersionDropdown();
 
     if (r.ae && r.ae.path) {
@@ -146,35 +156,88 @@ async function runDetect() {
     }
 }
 
-// dev50 — populate the AE-version dropdown when 2+ installs are detected.
-// Hidden when there's 0 or 1 (single-install machines never see it).
+// dev51 — the version row is ALWAYS visible, even when a single install
+// (or zero installs) is detected. Per tester feedback, the auto-pick of
+// the newest year felt too fast and gave the user no say. The
+// "Browse…" button next to the dropdown handles portable AE builds,
+// custom install paths, and versions our `Adobe After Effects YYYY`
+// glob missed.
+//
+// Header copy adapts to the count: 0 detected → "No After Effects
+// install detected"; 1 detected → "After Effects detected"; 2+ →
+// "Multiple After Effects installs detected".
 function populateAeVersionDropdown() {
-    const row = $('ae-version-row');
-    const sel = $('ae-version-select');
+    const row  = $('ae-version-row');
+    const sel  = $('ae-version-select');
+    const head = row && row.querySelector('.ae-row-head');
+    const hint = row && row.querySelector('.ae-row-hint');
     if (!row || !sel) return;
-    if (!state.aeVersions || state.aeVersions.length < 2) {
-        row.classList.add('hidden');
-        sel.innerHTML = '';
-        return;
+
+    const n = state.aeVersions.length;
+    if (n === 0) {
+        if (head) head.textContent = 'No After Effects install detected';
+        if (hint) hint.textContent = 'Click “Browse…” to point us at AfterFX.exe.';
+    } else if (n === 1) {
+        if (head) head.textContent = 'After Effects detected';
+        if (hint) hint.textContent = 'Confirm this build, or pick a different copy with “Browse…”.';
+    } else {
+        if (head) head.textContent = 'Multiple After Effects installs detected';
+        if (hint) hint.textContent = 'Pick the version you’d like Chiral Network to drive. You can change this later from the wizard’s edit mode.';
     }
+
     sel.innerHTML = '';
-    state.aeVersions.forEach((v, idx) => {
-        const opt = document.createElement('option');
-        opt.value = String(idx);
-        opt.textContent = v.label + (idx === 0 ? '  (newest)' : '');
-        sel.appendChild(opt);
-    });
-    // Default selection: if state.aePath matches one of the detected versions
-    // (edit mode — user already has one configured), preselect it. Else
-    // newest-first (idx=0).
-    let initial = 0;
-    if (state.aePath) {
-        const found = state.aeVersions.findIndex(v => v.path === state.aePath);
-        if (found >= 0) initial = found;
+    if (n === 0) {
+        // Disabled placeholder so the dropdown reads as "nothing here yet"
+        // rather than empty — and so its width matches the populated case.
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = '— No installs found —';
+        placeholder.disabled = true;
+        placeholder.selected = true;
+        sel.appendChild(placeholder);
+        sel.disabled = true;
+    } else {
+        sel.disabled = false;
+        state.aeVersions.forEach((v, idx) => {
+            const opt = document.createElement('option');
+            opt.value = String(idx);
+            // "(newest)" suffix only meaningful when there's something to
+            // compare against. With a single detected install it's noise.
+            opt.textContent = v.label + (idx === 0 && n > 1 ? '  (newest)' : '');
+            sel.appendChild(opt);
+        });
     }
-    sel.value = String(initial);
-    state.aePath = state.aeVersions[initial].path;
+
+    // Default selection.
+    if (n === 0) {
+        state.aePath = null;
+    } else {
+        let initial = 0;
+        if (state.aePath) {
+            const found = state.aeVersions.findIndex(v => v.path === state.aePath);
+            if (found >= 0) initial = found;
+        }
+        sel.value = String(initial);
+        state.aePath = state.aeVersions[initial].path;
+    }
+
     row.classList.remove('hidden');
+}
+
+// dev51 — derive a label/year from any AfterFX.exe path. Used when the
+// user picks a version manually — the path may or may not match the
+// canonical `C:\Program Files\Adobe\Adobe After Effects YYYY\…` layout
+// (portable builds, beta channels, dev installs all break the glob).
+function deriveAeMeta(p) {
+    if (!p) return null;
+    const m = String(p).match(/Adobe After Effects (\d{4})/i);
+    if (m) return { path: p, year: m[1], label: 'After Effects ' + m[1] };
+    // Fallback — surface the parent folder's tail so the dropdown entry
+    // still tells the user *which* manual pick this is, instead of just
+    // "Custom".
+    const segs = String(p).split(/[\\/]+/).filter(Boolean);
+    const tail = segs.length >= 3 ? segs[segs.length - 3] : (segs[0] || p);
+    return { path: p, year: null, label: 'Custom: ' + tail };
 }
 
 // AE detail label for the Step 1 row — includes the year when known and a
@@ -388,11 +451,14 @@ $('btn-install-resolve').onclick = installResolveNow;
 $('btn-install-python').onclick  = installPythonNow;
 $('btn-finish').onclick = clickFinish;
 
-// dev50 — AE version dropdown change handler. Updates state.aePath and
-// re-renders the Step 1 row detail (so the user gets immediate feedback
-// that their pick was registered). Fires before the user advances to
-// Step 2/3, so the chosen version is what wizard:save persists.
-const aeSel = $('ae-version-select');
+// dev50/dev51 — AE version dropdown + Browse button.
+// Dropdown change updates state.aePath from the detected list; Browse
+// opens a file picker, dedups the result against existing entries,
+// adds it if new, and selects it. Both update the Step 1 row detail
+// so the user gets immediate feedback that their pick was registered.
+const aeSel    = $('ae-version-select');
+const aeBrowse = $('ae-browse-btn');
+
 if (aeSel) {
     aeSel.addEventListener('change', () => {
         const idx = parseInt(aeSel.value, 10);
@@ -400,6 +466,28 @@ if (aeSel) {
             state.aePath = state.aeVersions[idx].path;
             setRow('detect-list', 'ae', 'ok', aeDetailLabel());
         }
+    });
+}
+
+if (aeBrowse) {
+    aeBrowse.addEventListener('click', async () => {
+        let r;
+        try { r = await window.wizard.pickAEExe(); }
+        catch (e) { r = { ok: false, error: e && e.message }; }
+        if (!r || !r.ok) {
+            if (r && r.error) $('err-ae').textContent = r.error;
+            return;
+        }
+        // Dedup — picking the same path twice shouldn't grow the dropdown.
+        let idx = state.aeVersions.findIndex(x => x.path === r.path);
+        if (idx < 0) {
+            state.aeVersions.push(deriveAeMeta(r.path));
+            idx = state.aeVersions.length - 1;
+        }
+        state.aePath = r.path;
+        populateAeVersionDropdown();
+        if (aeSel) aeSel.value = String(idx);
+        setRow('detect-list', 'ae', 'ok', aeDetailLabel());
     });
 }
 

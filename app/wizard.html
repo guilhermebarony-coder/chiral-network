@@ -85,18 +85,28 @@
         }
         .progress .lbl {
             display: grid; grid-template-columns: repeat(4, 1fr);
-            gap: 4px; margin-top: 6px;
+            gap: 4px; margin-top: 8px;
             font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase;
             color: var(--fg-dim);
         }
-        .progress .lbl span { text-align: left; }
+        /* dev51 — labels are centered under their segment, not left-aligned.
+           Each label cell owns 1fr of the parent's grid; centering inside
+           the cell guarantees the label sits visually under its bar
+           regardless of how long the localized text is. */
+        .progress .lbl span { text-align: center; }
         .progress .lbl span.active { color: var(--accent); }
 
         /* Panes */
         .pane { display: none; }
         .pane.active { display: block; }
 
-        /* Checklist */
+        /* Checklist
+           dev51 — row layout cleaned up so icon / label / [optional
+           inline button] / detail land at predictable x-positions on
+           every row. The label is the flex-grower (flex: 1) so the
+           right-side cluster always sits flush-right, and the detail
+           never fights the inline button for `margin-left: auto`
+           leftover space (which produced inconsistent gaps in dev50). */
         .checklist { list-style: none; padding: 0; margin: 12px 0 18px; }
         .checklist li {
             padding: 9px 12px;
@@ -105,31 +115,41 @@
             border-radius: 3px;
             margin-bottom: 6px; font-size: 12px;
             display: flex; align-items: center; gap: 12px;
+            min-height: 34px;                    /* keep all rows the same height even when only an icon+label is rendered */
             transition: border-color 0.2s ease;
         }
         .checklist li:hover { border-color: var(--line-strong); }
         .checklist .ico {
-            font-size: 13px; width: 16px; display: inline-block;
-            text-align: center; flex: none;
+            font-size: 13px; flex: 0 0 16px;
+            display: inline-flex; align-items: center; justify-content: center;
             font-family: 'JetBrains Mono', Consolas, monospace;
         }
         .checklist .ico.ok   { color: var(--ok); }
         .checklist .ico.warn { color: var(--warn); }
         .checklist .ico.fail { color: var(--fail); }
         .checklist .ico.wait { color: var(--fg-dim); }
-        .checklist .lbl     { font-weight: 500; }
-        .checklist .detail  {
-            font-size: 10.5px; color: var(--fg-dim); margin-left: auto;
+        /* lbl is the row's flex-grower. Pills inside it sit inline thanks
+           to inline-flex, with a fixed gap from the label text — so a
+           "FFmpeg [VENDORED]" row always shows the pill at the same
+           offset from the icon as every other vendored row. */
+        .checklist .lbl {
+            flex: 1 1 auto; min-width: 0;
+            font-weight: 500;
+            display: inline-flex; align-items: center; gap: 8px;
+        }
+        .checklist .detail {
+            flex: 0 0 auto;
+            font-size: 10.5px; color: var(--fg-dim);
             max-width: 340px; overflow: hidden; text-overflow: ellipsis;
             white-space: nowrap; direction: rtl; text-align: left;
             font-family: 'JetBrains Mono', Consolas, monospace;
         }
         .checklist button.inline {
+            flex: 0 0 auto;
             background: transparent; color: var(--accent);
             border: 1px solid var(--accent-line);
             padding: 3px 9px; font-size: 10.5px; border-radius: 2px;
-            cursor: pointer; margin-left: auto; font-weight: 500;
-            letter-spacing: 0.03em;
+            cursor: pointer; font-weight: 500; letter-spacing: 0.03em;
         }
         .checklist button.inline:hover {
             background: var(--accent-soft); border-color: var(--accent);
@@ -169,12 +189,29 @@
         .ae-version-row .ae-row-hint {
             font-size: 10.5px; color: var(--fg-dim); margin-bottom: 8px;
         }
+        .ae-version-row .ae-controls {
+            display: flex; gap: 8px; align-items: stretch;
+        }
         .ae-version-row select {
-            width: 100%; background: var(--bg); color: var(--fg);
+            flex: 1 1 auto; background: var(--bg); color: var(--fg);
             padding: 6px 9px; border: 1px solid var(--line-strong);
             border-radius: 2px; font-size: 12px; cursor: pointer;
         }
+        .ae-version-row select:disabled {
+            color: var(--fg-dim); cursor: not-allowed;
+        }
         .ae-version-row select:focus { outline: none; border-color: var(--accent); }
+        .ae-version-row .ae-browse-btn {
+            flex: 0 0 auto;
+            background: transparent; color: var(--accent);
+            border: 1px solid var(--accent-line);
+            padding: 6px 12px; font-size: 11.5px; border-radius: 2px;
+            cursor: pointer; font-weight: 500; letter-spacing: 0.02em;
+            white-space: nowrap;
+        }
+        .ae-version-row .ae-browse-btn:hover {
+            background: var(--accent-soft); border-color: var(--accent);
+        }
         .ae-version-row.hidden { display: none; }
 
         /* Nav */
@@ -259,13 +296,17 @@
         <small class="muted">Components marked <span class="pill">vendored</span>
            ship inside Chiral Network — no extra install needed.</small>
 
-        <!-- AE multi-version selector: revealed only when 2+ installs
-             are found. Single-install machines never see this. -->
+        <!-- AE version selector: dev51 — always visible, with a manual
+             Browse… button for portable / custom / missed installs. The
+             header / hint copy adapts to the detected count. -->
         <div id="ae-version-row" class="ae-version-row hidden">
-            <div class="ae-row-head">Multiple After Effects installs detected</div>
-            <div class="ae-row-hint">Pick the version you'd like Chiral Network
-               to drive. You can change this later from the wizard's edit mode.</div>
-            <select id="ae-version-select"></select>
+            <div class="ae-row-head">After Effects</div>
+            <div class="ae-row-hint">&nbsp;</div>
+            <div class="ae-controls">
+                <select id="ae-version-select"></select>
+                <button id="ae-browse-btn" class="ae-browse-btn"
+                        type="button">Browse&hellip;</button>
+            </div>
         </div>
 
         <nav class="nav">
