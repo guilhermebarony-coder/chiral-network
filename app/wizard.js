@@ -1,8 +1,15 @@
-// wizard.js — renderer logic for the Setup Wizard.
+// wizard.js — renderer logic for the Chiral Network Setup Wizard.
 //
 // State is a plain object. Navigation is explicit function calls. No classes,
 // no state manager, no async queue — just short handlers that call the IPC
 // bridge and re-render the relevant pane.
+//
+// dev50 — added manual After Effects version selector. detectAfterEffects()
+// now returns a `versions` array (newest-first). When 2+ AE installs are
+// present we reveal the dropdown on Step 1 so the user can pick the
+// preferred year; when there's exactly one we silently use it. The
+// `roundtripRoot` config key is intentionally preserved on disk for
+// upgrade-in-place compatibility (see CHANGELOG entry for the rebrand).
 
 const $ = id => document.getElementById(id);
 
@@ -13,8 +20,9 @@ const $ = id => document.getElementById(id);
 const state = {
     detect:       null,   // result of wizard:detect (ae/resolve/ffmpeg/pythonRegistry)
     aePath:       null,   // resolved AE path (from detect OR manual pick)
-    ffmpegPath:   null,   // resolved ffmpeg path (detect only — no manual picker in v0.1)
-    rootPath:     null,   // user-chosen roundtrip root
+    aeVersions:   [],     // dev50 — all detected AE installs (newest-first)
+    ffmpegPath:   null,   // resolved ffmpeg path (detect only — no manual picker)
+    rootPath:     null,   // user-chosen projects root
     rootWritable: false,  // result of last probeWritable
     resolveInstalled: false,   // true once the user clicks "Install now" on Step 4
     pythonRegistered: false,   // true when detect reports a PythonCore registry key
@@ -28,10 +36,15 @@ function showStep(n) {
     document.querySelectorAll('.pane').forEach(p => {
         p.classList.toggle('active', Number(p.dataset.pane) === n);
     });
-    document.querySelectorAll('.steps .dot').forEach(d => {
-        const dn = Number(d.dataset.n);
-        d.classList.toggle('active', dn === n);
-        d.classList.toggle('done',   dn < n);
+    // dev50 — energy-style progress segments + label tinting.
+    document.querySelectorAll('.progress .seg').forEach(s => {
+        const dn = Number(s.dataset.n);
+        s.classList.toggle('active', dn === n);
+        s.classList.toggle('done',   dn < n);
+    });
+    document.querySelectorAll('.progress .lbl span').forEach(l => {
+        const dn = Number(l.dataset.n);
+        l.classList.toggle('active', dn === n);
     });
 }
 
@@ -42,8 +55,8 @@ function setRow(listId, key, status, detail) {
     if (!li) return;
     const ico = li.querySelector('.ico');
     const det = li.querySelector('.detail');
-    const glyphs = { ok: '\u2713', warn: '\u26A0', fail: '\u2717', wait: '\u2026' };
-    ico.textContent = glyphs[status] || '\u2026';
+    const glyphs = { ok: '✓', warn: '⚠', fail: '✗', wait: '…' };
+    ico.textContent = glyphs[status] || '…';
     ico.className = 'ico ' + status;
     if (det) det.textContent = detail || '';
 }
@@ -54,16 +67,24 @@ function setRow(listId, key, status, detail) {
 // NOT clobber the user's existing saved values — it only fills state when
 // the slot is empty (first-run, or edit mode with a blank slot).
 async function runDetect() {
-    ['ae', 'resolve', 'resolveSdk', 'ffmpeg'].forEach(k => setRow('detect-list', k, 'wait', ''));
+    ['ae', 'resolve', 'resolveSdk', 'ffmpeg', 'python'].forEach(k =>
+        setRow('detect-list', k, 'wait', ''));
     let r;
     try { r = await window.wizard.detect(); }
     catch (_) { r = { ae: null, resolve: null, ffmpeg: null }; }
     state.detect = r;
 
     // After Effects — hard requirement, so 'fail' if nothing available.
+    // dev50 — surface ALL detected versions; if more than one, reveal the
+    // dropdown and bind it. Default selection: state.aePath (if it matches
+    // a detected install — edit mode) else versions[0] (newest).
+    state.aeVersions = (r.ae && Array.isArray(r.ae.versions)) ? r.ae.versions : [];
+    populateAeVersionDropdown();
+
     if (r.ae && r.ae.path) {
         if (!state.aePath) state.aePath = r.ae.path;
-        setRow('detect-list', 'ae', 'ok', state.aePath || r.ae.path);
+        const det = aeDetailLabel();
+        setRow('detect-list', 'ae', 'ok', det);
     } else if (state.aePath) {
         // Edit mode: detection didn't find AE at a standard location but the
         // user has a path saved. Trust it; wizard:save will re-validate on finish.
@@ -94,29 +115,78 @@ async function runDetect() {
         setRow('detect-list', 'resolveSdk', 'warn', 'Resolve not detected');
     }
 
-    // FFmpeg — permissive; warn if not found AND nothing saved.
+    // FFmpeg — vendored under resources/vendor/ffmpeg/ in packaged builds, so
+    // detection should normally succeed via the bundled candidate. We still
+    // accept env / system / PATH fallbacks for from-source dev.
     if (r.ffmpeg && r.ffmpeg.path) {
         if (!state.ffmpegPath) state.ffmpegPath = r.ffmpeg.path;
         setRow('detect-list', 'ffmpeg', 'ok', state.ffmpegPath || r.ffmpeg.path);
     } else if (state.ffmpegPath) {
         setRow('detect-list', 'ffmpeg', 'ok', state.ffmpegPath);
     } else {
-        setRow('detect-list', 'ffmpeg', 'warn', 'Not found — previews will stay as .mp4');
+        // Vendored ffmpeg should make this branch unreachable in packaged
+        // builds; if a tester hits it, vendor/ffmpeg/ wasn't shipped.
+        setRow('detect-list', 'ffmpeg', 'warn',
+               'Vendored copy missing — previews will stay as .mp4');
     }
 
-    // Python (registry) — this is what DaVinci Resolve checks to decide
-    // whether to expose Workspace → Scripts → Utility entries. Warn (not fail)
-    // because AE-only users can still finish setup; they just can't use the
-    // Resolve half of the roundtrip until they install Python.
+    // Python (registry) — Resolve discovers Python via the Windows registry,
+    // not via PATH and not via our vendored embeddable. The vendored 3.10.11
+    // under resources/vendor/python/ runs the relink/export scripts itself
+    // (spawned from main.js); the registry check here is purely about whether
+    // Resolve will surface "Workspace → Scripts → Utility → Chiral Network".
     state.pythonRegistered = !!(r.pythonRegistry && r.pythonRegistry.found);
     if (state.pythonRegistered) {
         const v = r.pythonRegistry.version ? ('v' + r.pythonRegistry.version) : '';
         setRow('detect-list', 'python', 'ok',
-               `Detected (${r.pythonRegistry.hive} ${v})`.trim());
+               `Registered for Resolve (${r.pythonRegistry.hive} ${v})`.trim());
     } else {
         setRow('detect-list', 'python', 'warn',
-               'Not installed — Resolve scripts will not be visible');
+               'Vendored 3.10.11 ready — register to expose Resolve scripts');
     }
+}
+
+// dev50 — populate the AE-version dropdown when 2+ installs are detected.
+// Hidden when there's 0 or 1 (single-install machines never see it).
+function populateAeVersionDropdown() {
+    const row = $('ae-version-row');
+    const sel = $('ae-version-select');
+    if (!row || !sel) return;
+    if (!state.aeVersions || state.aeVersions.length < 2) {
+        row.classList.add('hidden');
+        sel.innerHTML = '';
+        return;
+    }
+    sel.innerHTML = '';
+    state.aeVersions.forEach((v, idx) => {
+        const opt = document.createElement('option');
+        opt.value = String(idx);
+        opt.textContent = v.label + (idx === 0 ? '  (newest)' : '');
+        sel.appendChild(opt);
+    });
+    // Default selection: if state.aePath matches one of the detected versions
+    // (edit mode — user already has one configured), preselect it. Else
+    // newest-first (idx=0).
+    let initial = 0;
+    if (state.aePath) {
+        const found = state.aeVersions.findIndex(v => v.path === state.aePath);
+        if (found >= 0) initial = found;
+    }
+    sel.value = String(initial);
+    state.aePath = state.aeVersions[initial].path;
+    row.classList.remove('hidden');
+}
+
+// AE detail label for the Step 1 row — includes the year when known and a
+// "(N installs)" suffix when multiple are present, so the user understands
+// why the dropdown appeared without having to read the help text.
+function aeDetailLabel() {
+    const n = state.aeVersions.length;
+    const pick = state.aeVersions.find(v => v.path === state.aePath)
+              || state.aeVersions[0];
+    if (!pick) return state.aePath || '';
+    const label = pick.label || state.aePath;
+    return n > 1 ? `${label}  ·  ${n} installs detected` : label;
 }
 
 // ---- Step 2: Fix AE --------------------------------------------------------
@@ -134,9 +204,10 @@ async function pickAE() {
     $('btn-next-2').disabled = false;
 }
 
-// ---- Step 3: Roundtrip root ------------------------------------------------
+// ---- Step 3: Projects root -------------------------------------------------
 async function initRoot() {
     // Pre-fill with Documents\Roundtrip if we don't already have a pick.
+    // Path name is preserved from the rebrand for upgrade-in-place.
     if (!state.rootPath) {
         try {
             const d = await window.wizard.defaultRoot();
@@ -177,8 +248,13 @@ async function revalidateRoot() {
 // Refresh the ready-list icons and the Finish button from current state.
 async function refreshReady() {
     // AE — hard gate.
-    if (state.aePath) setRow('ready-list', 'ae', 'ok', state.aePath);
-    else              setRow('ready-list', 'ae', 'fail', 'Not set');
+    if (state.aePath) {
+        const pick = state.aeVersions.find(v => v.path === state.aePath);
+        const label = pick ? `${pick.label} — ${state.aePath}` : state.aePath;
+        setRow('ready-list', 'ae', 'ok', label);
+    } else {
+        setRow('ready-list', 'ae', 'fail', 'Not set');
+    }
 
     // Resolve scripts — warn if not detected and not installed by the user.
     const resolveDetected = !!(state.detect && state.detect.resolve
@@ -203,11 +279,11 @@ async function refreshReady() {
     // Resolve won't see our scripts. Button hides once registration succeeds.
     const pyBtn = $('btn-install-python');
     if (state.pythonRegistered) {
-        setRow('ready-list', 'python', 'ok', 'Detected');
+        setRow('ready-list', 'python', 'ok', 'Registered for Resolve scripting');
         pyBtn.classList.add('hidden');
     } else {
         setRow('ready-list', 'python', 'warn',
-               'Required for Resolve scripts — install to enable');
+               'Vendored 3.10.11 runs the bridge — register to expose Resolve menu');
         pyBtn.classList.remove('hidden');
     }
 
@@ -231,11 +307,11 @@ async function refreshReady() {
 async function installPythonNow() {
     const btn = $('btn-install-python');
     $('err-finish').textContent = '';
-    if (btn) { btn.disabled = true; btn.textContent = 'Installing\u2026'; }
+    if (btn) { btn.disabled = true; btn.textContent = 'Installing…'; }
     let r;
     try { r = await window.wizard.installPython(); }
     catch (e) { r = { ok: false, error: e.message }; }
-    if (btn) { btn.disabled = false; btn.textContent = 'Install Python'; }
+    if (btn) { btn.disabled = false; btn.textContent = 'Register for Resolve'; }
     if (r.ok) {
         state.pythonRegistered = true;
         // Refresh the detect block too so both screens stay consistent.
@@ -268,6 +344,9 @@ async function clickFinish() {
     const payload = {
         afterEffectsPath:        state.aePath,
         ffmpegPath:              state.ffmpegPath,
+        // Config key intentionally preserved as `roundtripRoot` for
+        // upgrade-in-place — pre-rename installs already have this key
+        // pointing at their data folder. See CHANGELOG.
         roundtripRoot:           state.rootPath,
         resolveScriptsInstalled: state.resolveInstalled,
     };
@@ -308,6 +387,21 @@ $('btn-retry').onclick  = async () => { await runDetect(); await refreshReady();
 $('btn-install-resolve').onclick = installResolveNow;
 $('btn-install-python').onclick  = installPythonNow;
 $('btn-finish').onclick = clickFinish;
+
+// dev50 — AE version dropdown change handler. Updates state.aePath and
+// re-renders the Step 1 row detail (so the user gets immediate feedback
+// that their pick was registered). Fires before the user advances to
+// Step 2/3, so the chosen version is what wizard:save persists.
+const aeSel = $('ae-version-select');
+if (aeSel) {
+    aeSel.addEventListener('change', () => {
+        const idx = parseInt(aeSel.value, 10);
+        if (Number.isFinite(idx) && state.aeVersions[idx]) {
+            state.aePath = state.aeVersions[idx].path;
+            setRow('detect-list', 'ae', 'ok', aeDetailLabel());
+        }
+    });
+}
 
 // ---- Boot ------------------------------------------------------------------
 // On startup we ask main for the mode + current config. In edit mode the

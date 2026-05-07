@@ -13,6 +13,112 @@ bumps may break disk format).
 
 ---
 
+## [0.5.0-dev50] — 2026-05-07 — **UI overhaul, manual AE selection & bilingual docs**
+
+First public-facing pass after the GitHub push. Three threads:
+docs go bilingual + Pre-Alpha-honest, the Setup Wizard gets
+rebranded and restyled to match the main app, and the AE detector
+stops silently picking the newest install.
+
+### Added — bilingual README
+
+- `README.md` now opens with a language switcher
+  (🇺🇸 English · 🇧🇷 Português) and a "100% vibecoded, Pre-Alpha"
+  status banner so first-time visitors don't mistake the polish for
+  shipping-readiness.
+- `README.pt-br.md` — full Brazilian Portuguese translation of the
+  English README. All three pillars (AE↔Resolve Bridge, Vault Asset
+  Management, Version Tracking), feature list, prerequisites,
+  on-disk layout, issue-reporting protocol, and dev quickstart are
+  translated end to end. Path names, config keys, and code blocks
+  are preserved verbatim.
+
+### Added — manual After Effects version selector
+
+`scripts/ae/`'s ExtendScript dispatch and the AE-side handlers can
+only talk to one After Effects instance at a time, but VFX
+machines routinely have 2 + AE versions installed (an old "render
+farm" 2022 next to a current 2025 for new work). Pre-dev50 we
+silently picked the newest year. dev50 surfaces the choice:
+
+- `app/lib/detect.js` — `detectAfterEffects()` now returns
+  `{ path, source, versions: [{ path, year, label }] }`. `path` is
+  preserved as the newest install (backward compat: every existing
+  caller that only reads `.path` keeps working). `versions` is
+  newest-first and includes every "Adobe After Effects YYYY"
+  install under `C:\Program Files\Adobe`.
+- `app/wizard.html` + `app/wizard.js` — Step 1 reveals an
+  "After Effects version" dropdown when `versions.length > 1`. The
+  dropdown defaults to the newest install (or the user's previously-
+  configured choice in edit mode). Single-install machines never
+  see the dropdown.
+- `wizard.js` updates `state.aePath` on every `change` event and
+  re-paints the Step 1 row detail so the user has immediate
+  feedback that their pick was registered before they advance.
+
+### Changed — Setup Wizard rebrand + industrial restyle
+
+- All "Roundtrip" UI strings replaced with "Chiral Network" across
+  `app/wizard.html`, `app/wizard.js`, and the user-facing dialog
+  titles in `app/main.js` (window title, root-picker dialog,
+  reset-confirm dialog, error messages).
+- Wizard CSS rewritten to match `app/index.html`'s palette:
+  oklch gold accent (`--accent: oklch(0.8 0.13 75)`), monochrome
+  surfaces, thin borders, no gradients. Inter for UI text,
+  JetBrains Mono for paths/values.
+- "4 step dots" → an energy-style segmented progress bar (4 thin
+  full-width segments + an uppercase label row underneath).
+  Active segment glows with a soft accent shadow; done segments
+  stay accent-tinted. Reads at peripheral vision.
+- A **Brand strip** at the top: `CHIRAL NETWORK` (with the "Chiral"
+  half in accent gold) on the left, `Setup · Pre-Alpha` on the
+  right — sets context once and disappears into the chrome.
+
+### Changed — dependency block reflects vendored reality
+
+The wizard's checklist no longer treats Python and FFmpeg as
+"hopefully you have these installed". Both ship inside the app
+under `resources/vendor/`, so the rows now carry a small
+`[VENDORED]` pill and helper copy that reflects what's actually
+true:
+
+- **Python 3.10** — labeled "Python 3.10" (was "Python (required
+  for Resolve scripting)"). The Step 1 row description distinguishes
+  between two states: registered with Windows for Resolve discovery
+  (✓) vs. only running the bridge internally (⚠). The "Install
+  Python" button is renamed "Register for Resolve" — that's
+  literally what it does (the embed is already there, the registry
+  key is what's missing).
+- **FFmpeg** — labeled with the `[VENDORED]` pill. The "warn"
+  branch is now reachable only if the vendored copy is missing,
+  which would be a packaging bug rather than a tester problem.
+
+### Preserved — on-disk paths & config keys
+
+The internal `roundtripRoot` config key, the `%APPDATA%/Roundtrip/`
+runtime path, and the `defaultRoundtripRoot()` function name are
+**not** renamed. These are the upgrade-in-place contract for users
+on dev1–dev49 builds; renaming them would orphan their existing
+config and trash data. Documented in both READMEs.
+
+### Files
+
+- `app/wizard.html` — full rewrite (172 → ~280 lines), industrial
+  restyle, AE version dropdown, vendored pills, brand strip.
+- `app/wizard.js` — adds `state.aeVersions`,
+  `populateAeVersionDropdown()`, `aeDetailLabel()`, energy progress
+  helpers; copy updates throughout.
+- `app/lib/detect.js` — `detectAfterEffects()` now returns the
+  versions array (additive change, no breaks).
+- `app/main.js` — five UI string updates (window title, dialog
+  titles, error messages). No logic changes.
+- `app/package.json` — version dev49 → dev50.
+- `README.md` — language switcher + Pre-Alpha banner.
+- `README.pt-br.md` — new file.
+- `CHANGELOG.md` — this entry.
+
+---
+
 ## [0.5.0-dev49] — 2026-05-07 — **Overview ↔ shot navigation: stale-shot blink fix**
 
 Tester report: "whenever I switch between overview/shot, one other

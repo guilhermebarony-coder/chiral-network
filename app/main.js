@@ -2268,7 +2268,7 @@ function openWizardWindow(mode = 'first-run') {
     wizardWin = new BrowserWindow({
         width: 640, height: 580,
         resizable: false, minimizable: false, maximizable: false,
-        title: 'Roundtrip — Setup',
+        title: 'Chiral Network — Setup',
         autoHideMenuBar: true,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
@@ -2369,7 +2369,7 @@ ipcMain.handle('wizard:pickAEExe', async () => {
 ipcMain.handle('wizard:pickRoot', async (_e, suggested) => {
     const parent = wizardWin && !wizardWin.isDestroyed() ? wizardWin : null;
     const res = await dialog.showOpenDialog(parent, {
-        title: 'Choose Roundtrip root folder',
+        title: 'Choose Chiral Network projects folder',
         defaultPath: suggested || detect.defaultRoundtripRoot() || undefined,
         properties: ['openDirectory', 'createDirectory'],
     });
@@ -2418,7 +2418,7 @@ ipcMain.handle('wizard:save', (_e, payload) => {
     if (!p.afterEffectsPath || !fs.existsSync(p.afterEffectsPath))
         return { ok: false, error: 'After Effects path is invalid' };
     if (!p.roundtripRoot || !detect.isWritableDir(p.roundtripRoot))
-        return { ok: false, error: 'Roundtrip root is not writable' };
+        return { ok: false, error: 'Chiral Network projects folder is not writable' };
     try { fs.mkdirSync(path.join(p.roundtripRoot, 'projects'), { recursive: true }); }
     catch (e) { return { ok: false, error: 'mkdir failed: ' + e.message }; }
 
@@ -2802,7 +2802,7 @@ ipcMain.handle('app:repair', () => {
 
     if (!cfg.roundtripRoot) {
         report.ok = false;
-        report.issues.push('Roundtrip root is not set.');
+        report.issues.push('Chiral Network projects folder is not set.');
     } else {
         const projects = path.join(cfg.roundtripRoot, 'projects');
         try {
@@ -2848,7 +2848,7 @@ ipcMain.handle('app:reset', async () => {
         type: 'warning',
         buttons: ['Cancel', 'Reset setup'],
         defaultId: 0, cancelId: 0,
-        title: 'Reset Roundtrip setup?',
+        title: 'Reset Chiral Network setup?',
         message: 'This will clear your configuration and reopen the Setup Wizard.',
         detail: 'Your projects, renders, and versions on disk are NOT affected.',
     });

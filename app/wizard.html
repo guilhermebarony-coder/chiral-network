@@ -2,84 +2,243 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Roundtrip — Setup</title>
+    <title>Chiral Network — Setup</title>
     <style>
-        /* Reuses the dark theme from index.html. Inline to keep one file. */
-        body { font-family: Segoe UI, sans-serif; margin: 0; padding: 22px 26px;
-               background: #1e1e1e; color: #ddd; user-select: none; }
-        h1 { font-size: 18px; margin: 0 0 8px; color: #eee; font-weight: 600; }
-        p.muted { font-size: 12px; color: #999; margin: 0 0 14px; line-height: 1.5; }
-        small.muted { font-size: 11px; color: #777; display: block; margin-top: 6px; line-height: 1.4; }
-        code { background: #111; color: #cda; padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+        /* dev50 — industrial/minimalist restyle. Mirrors index.html's
+           oklch gold accent + dark canvas so the wizard doesn't feel
+           like a separate app. Single accent line, monochrome surfaces,
+           thin borders, no gradients. */
 
-        /* Progress dots */
-        .steps { display: flex; gap: 8px; margin-bottom: 16px; justify-content: center; }
-        .steps .dot { width: 22px; height: 22px; border-radius: 50%;
-                      background: #333; color: #777; font-size: 11px; font-weight: 600;
-                      display: flex; align-items: center; justify-content: center;
-                      border: 1px solid #444; }
-        .steps .dot.active { background: #2d7; color: #041; border-color: #2d7; }
-        .steps .dot.done   { background: #1e4a2a; color: #8f8; border-color: #2d7; }
+        :root {
+            --bg:           #161616;
+            --surface:      #1d1d1d;
+            --surface-2:    #232323;
+            --line:         #2c2c2c;
+            --line-strong:  #3a3a3a;
+            --fg:           #e6e6e6;
+            --fg-mute:      #9a9a9a;
+            --fg-dim:       #6a6a6a;
+            --accent-h:     75;
+            --accent:       oklch(0.8  0.13 var(--accent-h));
+            --accent-strong:oklch(0.86 0.14 var(--accent-h));
+            --accent-soft:  oklch(0.8  0.13 var(--accent-h) / 0.16);
+            --accent-line:  oklch(0.8  0.13 var(--accent-h) / 0.45);
+            --accent-on:    oklch(0.18 0.02 var(--accent-h));
+            --ok:           oklch(0.78 0.13 145);
+            --warn:         oklch(0.82 0.14 80);
+            --fail:         oklch(0.66 0.18 25);
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+            margin: 0; padding: 28px 32px;
+            background: var(--bg); color: var(--fg);
+            user-select: none; line-height: 1.5;
+            font-size: 13px;
+            font-feature-settings: 'tnum' 1, 'cv11' 1;
+        }
+
+        /* Brand strip — single line, no logo, no shouty header. */
+        .brand {
+            display: flex; align-items: baseline; justify-content: space-between;
+            margin: 0 0 22px; padding-bottom: 12px;
+            border-bottom: 1px solid var(--line);
+        }
+        .brand .name {
+            font-size: 12px; font-weight: 600; letter-spacing: 0.04em;
+            text-transform: uppercase; color: var(--fg);
+        }
+        .brand .name .accent { color: var(--accent); }
+        .brand .stage {
+            font-size: 10px; color: var(--fg-dim);
+            letter-spacing: 0.08em; text-transform: uppercase;
+        }
+
+        h1 { font-size: 17px; margin: 0 0 6px; color: var(--fg); font-weight: 600;
+             letter-spacing: -0.01em; }
+        p.muted { font-size: 12px; color: var(--fg-mute); margin: 0 0 16px; }
+        small.muted { font-size: 11px; color: var(--fg-dim); display: block;
+                      margin-top: 6px; line-height: 1.5; }
+        code { background: #111; color: var(--accent); padding: 1px 5px;
+               border-radius: 2px; font-size: 11px;
+               font-family: 'JetBrains Mono', Consolas, monospace; }
+
+        /* Energy-style progress bar — flat segments with accent on active.
+           Replaces the old 4 dots. Each segment is full width / N steps,
+           thin, and the active one fills with the gold accent. Done
+           segments stay accent-tinted (lower alpha) so the user can read
+           progress at a glance even with peripheral vision. */
+        .progress {
+            display: grid; grid-template-columns: repeat(4, 1fr);
+            gap: 4px; margin: 0 0 22px;
+        }
+        .progress .seg {
+            height: 3px; background: var(--line); position: relative;
+            transition: background 0.25s ease;
+        }
+        .progress .seg.done   { background: var(--accent-line); }
+        .progress .seg.active {
+            background: var(--accent);
+            box-shadow: 0 0 8px var(--accent-soft);
+        }
+        .progress .lbl {
+            display: grid; grid-template-columns: repeat(4, 1fr);
+            gap: 4px; margin-top: 6px;
+            font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase;
+            color: var(--fg-dim);
+        }
+        .progress .lbl span { text-align: left; }
+        .progress .lbl span.active { color: var(--accent); }
 
         /* Panes */
         .pane { display: none; }
         .pane.active { display: block; }
 
         /* Checklist */
-        .checklist { list-style: none; padding: 0; margin: 10px 0 16px; }
-        .checklist li { padding: 7px 10px; background: #252525; border: 1px solid #333;
-                        border-radius: 4px; margin-bottom: 6px; font-size: 12px;
-                        display: flex; align-items: center; gap: 10px; }
-        .checklist .ico { font-size: 14px; width: 18px; display: inline-block; text-align: center; }
-        .checklist .ico.ok   { color: #4c4; }
-        .checklist .ico.warn { color: #d8a93a; }
-        .checklist .ico.fail { color: #e55; }
-        .checklist .ico.wait { color: #666; }
-        .checklist .detail { font-size: 10px; color: #777; margin-left: auto; max-width: 340px;
-                             overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-                             direction: rtl; text-align: left; }
-        .checklist button.inline { background: #39c; color: #fff; border: 0;
-                                   padding: 3px 8px; font-size: 10px; border-radius: 3px;
-                                   cursor: pointer; margin-left: auto; }
-        .checklist button.inline:hover { background: #4af; }
+        .checklist { list-style: none; padding: 0; margin: 12px 0 18px; }
+        .checklist li {
+            padding: 9px 12px;
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-radius: 3px;
+            margin-bottom: 6px; font-size: 12px;
+            display: flex; align-items: center; gap: 12px;
+            transition: border-color 0.2s ease;
+        }
+        .checklist li:hover { border-color: var(--line-strong); }
+        .checklist .ico {
+            font-size: 13px; width: 16px; display: inline-block;
+            text-align: center; flex: none;
+            font-family: 'JetBrains Mono', Consolas, monospace;
+        }
+        .checklist .ico.ok   { color: var(--ok); }
+        .checklist .ico.warn { color: var(--warn); }
+        .checklist .ico.fail { color: var(--fail); }
+        .checklist .ico.wait { color: var(--fg-dim); }
+        .checklist .lbl     { font-weight: 500; }
+        .checklist .detail  {
+            font-size: 10.5px; color: var(--fg-dim); margin-left: auto;
+            max-width: 340px; overflow: hidden; text-overflow: ellipsis;
+            white-space: nowrap; direction: rtl; text-align: left;
+            font-family: 'JetBrains Mono', Consolas, monospace;
+        }
+        .checklist button.inline {
+            background: transparent; color: var(--accent);
+            border: 1px solid var(--accent-line);
+            padding: 3px 9px; font-size: 10.5px; border-radius: 2px;
+            cursor: pointer; margin-left: auto; font-weight: 500;
+            letter-spacing: 0.03em;
+        }
+        .checklist button.inline:hover {
+            background: var(--accent-soft); border-color: var(--accent);
+        }
         .checklist button.inline.hidden { display: none; }
 
         /* Fields */
-        .field { display: flex; align-items: center; gap: 6px; margin: 10px 0; }
-        .field input { flex: 1; background: #222; color: #ddd; padding: 6px 8px;
-                       border: 1px solid #555; border-radius: 3px; font-size: 12px;
-                       font-family: Consolas, monospace; }
-        .field button { background: #444; color: #ddd; border: 0; padding: 6px 12px;
-                        font-size: 11px; border-radius: 3px; cursor: pointer; }
-        .field button:hover { background: #555; }
+        .field { display: flex; align-items: center; gap: 6px; margin: 12px 0; }
+        .field input, .field select {
+            flex: 1; background: var(--surface);
+            color: var(--fg); padding: 7px 10px;
+            border: 1px solid var(--line-strong); border-radius: 2px;
+            font-size: 12px; font-family: 'JetBrains Mono', Consolas, monospace;
+        }
+        .field select { font-family: 'Inter', system-ui, sans-serif; cursor: pointer; }
+        .field input:focus, .field select:focus {
+            outline: none; border-color: var(--accent); }
+        .field button {
+            background: var(--surface-2); color: var(--fg);
+            border: 1px solid var(--line-strong);
+            padding: 7px 14px; font-size: 11.5px; border-radius: 2px;
+            cursor: pointer; font-weight: 500;
+        }
+        .field button:hover { border-color: var(--accent-line); color: var(--accent); }
+
+        /* Standalone field for the AE version dropdown — only shown when
+           multiple installs are detected. The visual rhythm matches the
+           checklist rows so the eye doesn't have to retrain. */
+        .ae-version-row {
+            background: var(--surface); border: 1px solid var(--line);
+            border-radius: 3px; padding: 10px 12px; margin: 10px 0 6px;
+        }
+        .ae-version-row .ae-row-head {
+            display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+            font-size: 11.5px; font-weight: 500; color: var(--fg);
+        }
+        .ae-version-row .ae-row-hint {
+            font-size: 10.5px; color: var(--fg-dim); margin-bottom: 8px;
+        }
+        .ae-version-row select {
+            width: 100%; background: var(--bg); color: var(--fg);
+            padding: 6px 9px; border: 1px solid var(--line-strong);
+            border-radius: 2px; font-size: 12px; cursor: pointer;
+        }
+        .ae-version-row select:focus { outline: none; border-color: var(--accent); }
+        .ae-version-row.hidden { display: none; }
 
         /* Nav */
-        .nav { display: flex; gap: 8px; margin-top: 18px; justify-content: flex-end; }
-        .nav button { background: #2d7; color: #000; border: 0; padding: 7px 14px;
-                      font-size: 12px; font-weight: 600; border-radius: 4px; cursor: pointer; }
-        .nav button:hover { background: #3e8; }
-        .nav button.secondary { background: #444; color: #ddd; font-weight: 400; }
-        .nav button.secondary:hover { background: #555; }
-        .nav button:disabled { opacity: 0.4; cursor: not-allowed; }
+        .nav { display: flex; gap: 8px; margin-top: 22px; justify-content: flex-end; }
+        .nav button {
+            background: var(--accent); color: var(--accent-on);
+            border: 1px solid var(--accent);
+            padding: 8px 18px; font-size: 12px; font-weight: 600;
+            letter-spacing: 0.02em;
+            border-radius: 2px; cursor: pointer;
+            transition: background 0.15s ease;
+        }
+        .nav button:hover { background: var(--accent-strong); }
+        .nav button.secondary {
+            background: transparent; color: var(--fg-mute);
+            border-color: var(--line-strong); font-weight: 400;
+        }
+        .nav button.secondary:hover {
+            color: var(--fg); border-color: var(--accent-line);
+        }
+        .nav button:disabled { opacity: 0.35; cursor: not-allowed; }
+        .nav button:disabled:hover { background: var(--accent); }
 
-        .err { color: #e66; font-size: 11px; min-height: 14px; margin-top: 4px; }
+        .err { color: var(--fail); font-size: 11px; min-height: 14px;
+               margin-top: 6px; }
         .hidden { display: none !important; }
+
+        /* dev50 — small "vendored" pill next to dependency rows that ship
+           inside the app. Reassures the user that no extra install is
+           needed for that component. */
+        .pill {
+            display: inline-block; font-size: 9.5px; padding: 2px 6px;
+            border-radius: 999px; letter-spacing: 0.05em;
+            text-transform: uppercase; font-weight: 500;
+            background: var(--accent-soft); color: var(--accent);
+            border: 1px solid var(--accent-line);
+        }
     </style>
 </head>
 <body>
 
-    <header class="steps">
-        <span class="dot active" data-n="1">1</span>
-        <span class="dot"        data-n="2">2</span>
-        <span class="dot"        data-n="3">3</span>
-        <span class="dot"        data-n="4">4</span>
+    <header class="brand">
+        <span class="name"><span class="accent">Chiral</span> Network</span>
+        <span class="stage">Setup · Pre-Alpha</span>
     </header>
+
+    <div class="progress">
+        <div class="seg active" data-n="1"></div>
+        <div class="seg"        data-n="2"></div>
+        <div class="seg"        data-n="3"></div>
+        <div class="seg"        data-n="4"></div>
+        <div class="lbl">
+            <span class="active" data-n="1">01 · Detect</span>
+            <span                data-n="2">02 · After Effects</span>
+            <span                data-n="3">03 · Projects root</span>
+            <span                data-n="4">04 · Ready</span>
+        </div>
+    </div>
 
     <!-- Step 1: Detect -->
     <section class="pane active" data-pane="1">
-        <h1>Welcome to Roundtrip</h1>
-        <p class="muted">Let's find the software Roundtrip needs.
-           This takes a few seconds.</p>
+        <h1>Welcome to Chiral Network</h1>
+        <p class="muted">Let's find the software Chiral Network needs to bridge
+           DaVinci Resolve and After Effects. This takes a few seconds.</p>
         <ul id="detect-list" class="checklist">
             <li data-k="ae"><span class="ico wait">&hellip;</span>
                 <span class="lbl">After Effects</span>
@@ -91,19 +250,31 @@
                 <span class="lbl">DaVinci Resolve Scripting SDK</span>
                 <span class="detail"></span></li>
             <li data-k="ffmpeg"><span class="ico wait">&hellip;</span>
-                <span class="lbl">FFmpeg (preview compression)</span>
+                <span class="lbl">FFmpeg <span class="pill">vendored</span></span>
                 <span class="detail"></span></li>
             <li data-k="python"><span class="ico wait">&hellip;</span>
-                <span class="lbl">Python (required for Resolve scripting)</span>
+                <span class="lbl">Python 3.10 <span class="pill">vendored</span></span>
                 <span class="detail"></span></li>
         </ul>
+        <small class="muted">Components marked <span class="pill">vendored</span>
+           ship inside Chiral Network — no extra install needed.</small>
+
+        <!-- AE multi-version selector: revealed only when 2+ installs
+             are found. Single-install machines never see this. -->
+        <div id="ae-version-row" class="ae-version-row hidden">
+            <div class="ae-row-head">Multiple After Effects installs detected</div>
+            <div class="ae-row-hint">Pick the version you'd like Chiral Network
+               to drive. You can change this later from the wizard's edit mode.</div>
+            <select id="ae-version-select"></select>
+        </div>
+
         <nav class="nav">
             <button id="btn-cancel-1" class="secondary">Cancel</button>
             <button id="btn-next-1">Next &rarr;</button>
         </nav>
     </section>
 
-    <!-- Step 2: Fix AE (conditional) -->
+    <!-- Step 2: Fix AE (only if Step 1 found nothing) -->
     <section class="pane" data-pane="2">
         <h1>Where is After Effects installed?</h1>
         <p class="muted">Point us to <code>AfterFX.exe</code>. It's usually at
@@ -119,11 +290,11 @@
         </nav>
     </section>
 
-    <!-- Step 3: Roundtrip root -->
+    <!-- Step 3: Projects root -->
     <section class="pane" data-pane="3">
         <h1>Where should your projects live?</h1>
-        <p class="muted">Roundtrip will store shots and renders in this folder.
-           We'll create it if it doesn't exist yet.</p>
+        <p class="muted">Chiral Network will store shots and renders in this
+           folder. We'll create it if it doesn't exist yet.</p>
         <div class="field">
             <input id="in-root" readonly>
             <button id="pick-root">Browse&hellip;</button>
@@ -149,11 +320,11 @@
                 <button id="btn-install-resolve" class="inline hidden">Install now</button>
                 <span class="detail"></span></li>
             <li data-k="ffmpeg"><span class="ico wait">&hellip;</span>
-                <span class="lbl">FFmpeg</span>
+                <span class="lbl">FFmpeg <span class="pill">vendored</span></span>
                 <span class="detail"></span></li>
             <li data-k="python"><span class="ico wait">&hellip;</span>
-                <span class="lbl">Python (Resolve scripting)</span>
-                <button id="btn-install-python" class="inline hidden">Install Python</button>
+                <span class="lbl">Python 3.10 <span class="pill">vendored</span></span>
+                <button id="btn-install-python" class="inline hidden">Register for Resolve</button>
                 <span class="detail"></span></li>
             <li data-k="root"><span class="ico wait">&hellip;</span>
                 <span class="lbl">Project folder</span>
@@ -163,7 +334,7 @@
         <nav class="nav">
             <button id="btn-back-4" class="secondary">&larr; Back</button>
             <button id="btn-retry"  class="secondary">Re-check</button>
-            <button id="btn-finish" disabled>Start using Roundtrip</button>
+            <button id="btn-finish" disabled>Start using Chiral Network</button>
         </nav>
     </section>
 

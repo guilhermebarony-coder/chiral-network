@@ -14,25 +14,54 @@ const { execFileSync } = require('child_process');
 
 // ---- After Effects ---------------------------------------------------------
 // Typical install: C:\Program Files\Adobe\Adobe After Effects YYYY\Support Files\AfterFX.exe
-// Years vary per user (2022/2023/2024/2025…); we scan and pick the newest.
+// Years vary per user (2022/2023/2024/2025…); we surface ALL of them so the
+// wizard can offer a dropdown when more than one is installed (a common case
+// for VFX shops who keep an old AE around for legacy projects). The single
+// `path` field stays = the newest version for backward compat with every
+// caller that only cares about "give me an AE".
+//
+// Return shape:
+//   { path:    string|null,    // newest version's AfterFX.exe (or env override)
+//     source:  'env'|'glob'|null,
+//     versions: Array<{ path, year, label }>,    // newest-first; empty if none
+//   }
 function detectAfterEffects() {
     // Env override wins if it points at a real file.
     if (process.env.AFTERFX_EXE && fs.existsSync(process.env.AFTERFX_EXE)) {
-        return { path: process.env.AFTERFX_EXE, source: 'env' };
+        return {
+            path: process.env.AFTERFX_EXE,
+            source: 'env',
+            versions: [{
+                path:  process.env.AFTERFX_EXE,
+                year:  null,
+                label: 'After Effects (env override)',
+            }],
+        };
     }
     const base = 'C:\\Program Files\\Adobe';
-    if (!fs.existsSync(base)) return { path: null, source: null };
+    if (!fs.existsSync(base)) return { path: null, source: null, versions: [] };
     let entries = [];
-    try { entries = fs.readdirSync(base); } catch (_) { return { path: null, source: null }; }
-    // Match "Adobe After Effects YYYY" — sort newest-year first.
+    try { entries = fs.readdirSync(base); }
+    catch (_) { return { path: null, source: null, versions: [] }; }
+    // Match "Adobe After Effects YYYY" — sort newest-year first so versions[0]
+    // is always the most recent install.
     const candidates = entries
         .filter(n => /^Adobe After Effects \d{4}$/.test(n))
         .sort().reverse();
+    const versions = [];
     for (const c of candidates) {
         const p = path.join(base, c, 'Support Files', 'AfterFX.exe');
-        if (fs.existsSync(p)) return { path: p, source: 'glob' };
+        if (fs.existsSync(p)) {
+            const m = c.match(/(\d{4})$/);
+            versions.push({
+                path:  p,
+                year:  m ? m[1] : null,
+                label: `After Effects ${m ? m[1] : ''}`.trim(),
+            });
+        }
     }
-    return { path: null, source: null };
+    if (!versions.length) return { path: null, source: null, versions: [] };
+    return { path: versions[0].path, source: 'glob', versions };
 }
 
 // ---- DaVinci Resolve scripts ----------------------------------------------

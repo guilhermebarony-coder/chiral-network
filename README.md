@@ -1,4 +1,11 @@
+<sub>🇺🇸 **English** &nbsp;·&nbsp; 🇧🇷 [Português](README.pt-br.md)</sub>
+
 # Chiral Network
+
+> **🚧 Status: 100% vibecoded, currently in Pre-Alpha.** Built end-to-end
+> in a long-running pair-programming session with Claude. Things will
+> break, change shape, and get rewritten. Tester feedback is the whole
+> point of this stage — file issues freely.
 
 > **Professional workflow automation bridge between DaVinci Resolve and
 > Adobe After Effects.** Marks → comp → render → relink, end to end, in
@@ -224,7 +231,7 @@ Replace your existing `Chiral-Network-x.y.z-x64/` folder wholesale —
 no settings migration is needed; user data lives in
 `%APPDATA%/Roundtrip/` and survives between versions.
 
-The current pre-alpha tester build is **0.5.0-dev49**. See
+The current pre-alpha tester build is **0.5.0-dev50**. See
 [`CHANGELOG.md`](CHANGELOG.md) for the full version history.
 
 ---
