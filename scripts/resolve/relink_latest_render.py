@@ -42,6 +42,22 @@ import json
 import time
 import traceback
 
+# dev57 — make the script's own directory importable. Under the vendored
+# Python embeddable's `_pth` regime, sys.path is FROZEN to what's listed in
+# python310._pth (`python310.zip` + `.` = vendor/python/). The script's
+# OWN directory (resources/scripts/resolve/) is NOT auto-prepended like a
+# normal `python foo.py` invocation would, so `from chiral_version import
+# ...` silently fails and the banner reads `vunknown`. Inserting __file__'s
+# dir at index 0 fixes both: the version banner now reflects the actual
+# build, AND any future sibling helpers we add to scripts/resolve/ become
+# importable without touching the embeddable layout.
+try:
+    _SELF_DIR = os.path.dirname(os.path.abspath(__file__))
+    if _SELF_DIR and _SELF_DIR not in sys.path:
+        sys.path.insert(0, _SELF_DIR)
+except Exception:
+    pass
+
 # Optional sibling. See export_range.py for the same try/except pattern —
 # Resolve's Utility folder install copies scripts individually and we want
 # the relink to keep working even if chiral_version.py wasn't copied along.
@@ -120,6 +136,43 @@ def _resolve_log_path(name):
 
 
 LOG_PATH = _resolve_log_path("relink.log")
+FAULTHANDLER_PATH = _resolve_log_path("relink.faulthandler.log")
+
+
+# dev57 — enable faulthandler. After dev55 confirmed `ctypes preload OK`
+# and dev56 enabled `import site` in the embeddable's _pth, rafag's log
+# STILL stops dead at "About to import DaVinciResolveScript..." with no
+# Python traceback. That's not a Python exception (would be caught and
+# logged); it's a C-level abort inside fusionscript's PyInit callback,
+# triggered by importlib loading the .pyd-equivalent module entry point.
+# Python's regular try/except can't see it. faulthandler installs Win32
+# / POSIX signal handlers that dump a Python+C traceback to a file just
+# before the process dies — exactly the missing diagnostic. The handle
+# must stay open for the lifetime of the process; we keep the module-
+# global reference alive via _FAULTHANDLER_FH.
+_FAULTHANDLER_FH = None
+try:
+    import faulthandler
+    try:
+        os.makedirs(os.path.dirname(FAULTHANDLER_PATH), exist_ok=True)
+    except Exception:
+        pass
+    try:
+        _FAULTHANDLER_FH = open(FAULTHANDLER_PATH, "w", encoding="utf-8")
+        faulthandler.enable(file=_FAULTHANDLER_FH, all_threads=True)
+    except Exception:
+        # Fall back to stderr — better than nothing if the file open
+        # itself fails. Some testers will have stderr captured by
+        # Electron and we'll still see the dump there.
+        try:
+            faulthandler.enable(all_threads=True)
+        except Exception:
+            pass
+except Exception:
+    # faulthandler is part of the stdlib in 3.3+, but if for any reason
+    # the import fails we don't want to break the entire script — the
+    # dev54/55 instrumentation still narrows the failure window.
+    pass
 
 
 def log(msg):

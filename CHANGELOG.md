@@ -13,6 +13,117 @@ bumps may break disk format).
 
 ---
 
+## [0.5.0-dev57] — 2026-05-07 — **`faulthandler` to capture the C-level abort + version-banner fix**
+
+dev56's `import site` _pth fix did **not** resolve rafag's relink. The
+log on dev56 reads identically to dev55:
+
+```
+Trying ctypes preload of: C:\Program Files\...\fusionscript.dll
+ctypes preload OK: handle=0x7ffbc9070000
+About to import DaVinciResolveScript...
+[ log ends ]
+```
+
+So the failure mode survives `import site` being on. fusionscript.dll
+maps into the process cleanly, and then something inside
+`PyInit_fusionscript` (called by importlib once the .py wrapper does
+`import fusionscript`) terminates the process at C level — no Python
+exception, no traceback, no log line.
+
+A regular Python `try/except` cannot see this kind of failure. We need
+a tool that survives a C-level abort. dev57 adds two things:
+
+### 1. `faulthandler.enable(file=...)` at module load
+
+`faulthandler` is part of the stdlib (3.3+). Calling
+`faulthandler.enable()` registers Win32 / POSIX signal handlers that,
+on `SIGSEGV` / `SIGABRT` / `SIGFPE` / `SIGILL`, dump a Python+C
+traceback to a file before the process dies. The handle has to stay
+alive for the lifetime of the process — we keep a module-level
+`_FAULTHANDLER_FH` reference so it doesn't get GC'd.
+
+The dump goes to `%APPDATA%/Chiral Network/logs/relink.faulthandler.log`,
+overwritten per run. If the relink script aborts in `PyInit_fusionscript`
+(or anywhere else in C), the next time we look at this file we'll see
+exactly which C function was on the stack when the process died. From
+there the next fix is targeted.
+
+If `faulthandler.enable(file=...)` itself fails (file-system error,
+unusual permissions), we fall back to `faulthandler.enable()` without
+a file argument — at least the dump goes to stderr, which Electron
+captures into `.relink.stderr.log`.
+
+### 2. Fix the `vunknown` banner — script dir on sys.path
+
+Every relink log we've seen reads:
+
+```
+==== relink_latest_render START (Chiral Network scripts vunknown) ====
+```
+
+That banner has been lying about the build for several devs. Reason:
+under the embeddable Python's `_pth` regime, `sys.path` is **frozen**
+to what's listed in `python310._pth` (`python310.zip` and `.` =
+`vendor/python/`). The script's own directory (`resources/scripts/
+resolve/`) is NOT auto-prepended like a normal `python foo.py`
+invocation would. So `from chiral_version import SCRIPT_VERSION`
+silently caught its `ImportError` and fell through to the
+`SCRIPT_VERSION = "unknown"` fallback.
+
+Fix: at the very top of `relink_latest_render.py`, insert
+`os.path.dirname(os.path.abspath(__file__))` at `sys.path[0]` BEFORE
+the `chiral_version` import. Now the banner reads
+`Chiral Network scripts v0.5.0-dev13`, which is also a quick visual
+check that testers are actually running the new build. (We've been
+asking testers "is this dev55 or dev56?" by parsing their `sys.executable`
+path — banner is more honest.)
+
+`export_range.py` runs inside Resolve's own Python interpreter, not
+our embeddable, so its sys.path already contains the script directory
+and the banner there has always been correct. No change there.
+
+### What to look for in dev57's log
+
+Three new tells:
+
+1. **`==== relink_latest_render START (Chiral Network scripts v0.5.0-dev13) ====`**
+   — confirms the build at a glance.
+2. **A non-empty `relink.faulthandler.log`** — IF the abort happens,
+   this file will name the C frame.
+3. The original abort still happens at the same point — but we now
+   have the dump to act on.
+
+The dev54 / dev55 instrumentation stays; we're stacking diagnostics,
+not replacing them.
+
+### Why we didn't just ship a different Python
+
+Dropping the embeddable for the full Python 3.10 installer is the
+nuclear option. It fixes the `_pth` / `import site` / lib-search
+caveats wholesale, but at the cost of an extra ~40 MB in the build
+and a real installer step on first run. Before going there, I want
+to know what `PyInit_fusionscript` is actually doing — `faulthandler`
+will tell us.
+
+### Files touched
+
+- `scripts/resolve/relink_latest_render.py` — script-dir on sys.path
+  at top of file; `faulthandler.enable(file=...)` after `LOG_PATH` is
+  resolved; comment block explaining the why.
+- `scripts/resolve/chiral_version.py` — `SCRIPT_VERSION` → `0.5.0-dev13`.
+- `app/package.json` — `version` → `0.5.0-dev57`.
+
+### Files NOT touched
+
+- `scripts/resolve/export_range.py` — banner already correct (Resolve
+  hosts the interpreter).
+- `vendor/python/python310._pth` — dev56's `import site` change stays
+  in. It's a pure win even if it didn't fix this specific crash.
+- Electron / spawn env — dev55's PATH augmentation stays.
+
+---
+
 ## [0.5.0-dev56] — 2026-05-07 — **🎯 Root cause: enable `site` init in vendored Python embed**
 
 The dev55 ctypes diagnostic immediately surfaced what we needed.
