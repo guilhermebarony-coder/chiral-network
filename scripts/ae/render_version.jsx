@@ -103,13 +103,28 @@
     // Format-specific metadata. `tpl` is the preferred template name; `legacy`
     // is an ordered fallback list; `builtin` is a last-resort built-in template
     // (used only for mp4 where AE ships one). `ext` is the default extension.
+    // dev58 — primary `tpl:` is now AE's built-in Output Module template.
+    // Reason: testers were having to manually create `_rt_mp4` / `_rt_422lt`
+    // / `_rt_4444` in After Effects' Output Module preset list before their
+    // first render would work. AE templates live in AE's binary prefs file
+    // (`Adobe After Effects <ver> Prefs-indep-output.txt`), which is per-
+    // version and not shippable from our side. The built-ins below ship
+    // with every AE 2022+ install, so promoting them to primary makes the
+    // first-run experience zero-setup. The old `_rt_*` names stay in
+    // `legacy:` so any tester who already created them keeps working
+    // identically — applyTemplate hits the built-in first and the legacy
+    // chain only fires if Adobe ever renames a built-in (locale variant,
+    // ProRes XQ branding, etc.).
     var FORMAT_INFO = {
-        "mp4":         { tpl: "_rt_mp4",    legacy: ["_superfast_mp4"],
+        "mp4":         { tpl: "H.264 - Match Render Settings - 15 Mbps",
+                         legacy: ["_rt_mp4", "_superfast_mp4"],
                          builtin: "H.264 - Match Render Settings - 15 Mbps",
                          ext: ".mp4" },
-        "prores_422":  { tpl: "_rt_422lt",  legacy: ["_fast_422lt", "_ProRes422LT"],
+        "prores_422":  { tpl: "Apple ProRes 422 LT",
+                         legacy: ["_rt_422lt", "_fast_422lt", "_ProRes422LT"],
                          builtin: null, ext: ".mov" },
-        "prores_4444": { tpl: "_rt_4444",   legacy: ["_final_4444", "_ProRes4444"],
+        "prores_4444": { tpl: "Apple ProRes 4444",
+                         legacy: ["_rt_4444", "_final_4444", "_ProRes4444"],
                          builtin: null, ext: ".mov" }
     };
 

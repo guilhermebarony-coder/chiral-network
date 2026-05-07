@@ -13,6 +13,62 @@ bumps may break disk format).
 
 ---
 
+## [0.5.0-dev58] — 2026-05-07 — **Zero-setup AE renders: use built-in Output Module templates**
+
+Testers were hitting `applyTemplate('_rt_mp4') failed: ...` on first
+render and had to manually create three Output Module templates
+(`_rt_mp4`, `_rt_422lt`, `_rt_4444`) in After Effects' preset list
+before the bridge would work. AE Output Module templates live in
+AE's per-version binary prefs file
+(`Adobe After Effects <ver> Prefs-indep-output.txt`), so we can't
+ship them as files alongside the app — they're not portable across
+AE versions or installs.
+
+### Fix
+
+Promote AE's built-in Output Module templates to the **primary**
+slot in `FORMAT_INFO` (`scripts/ae/render_version.jsx`). The
+built-ins ship with every AE 2022+ install (our minimum):
+
+| Format       | Primary template (built-in)                      |
+|--------------|--------------------------------------------------|
+| `mp4`        | `H.264 - Match Render Settings - 15 Mbps`        |
+| `prores_422` | `Apple ProRes 422 LT`                            |
+| `prores_4444`| `Apple ProRes 4444`                              |
+
+The `_rt_*` names move to `legacy:` so existing testers who already
+created them keep working identically — `applyTemplate` tries the
+built-in first, and the legacy chain only fires if Adobe ever renames
+a built-in (locale variant, ProRes XQ branding, etc.).
+
+### What this means for testers
+
+- **New installs**: zero AE setup needed. First **Render new version**
+  click works.
+- **Existing installs**: behaviorally identical. The `_rt_*` templates
+  testers created stay valid; they just become unreachable because the
+  built-in matches first.
+- **Tester onboarding doc**: one bullet shorter.
+
+### What this does NOT change
+
+- Render quality / codec settings — `Apple ProRes 4444` and
+  `Apple ProRes 422 LT` are the same codec configurations the `_rt_*`
+  templates wrapped around. Output is byte-identical at the codec
+  level.
+- The mp4 fallback path. `H.264 - Match Render Settings - 15 Mbps` was
+  already the `builtin:` fallback for mp4; it's now the primary too.
+- Anything Resolve-side. `chiral_version.py` SCRIPT_VERSION is
+  unchanged (this is purely AE).
+
+### Files touched
+
+- `scripts/ae/render_version.jsx` — `FORMAT_INFO` re-ordered, comment
+  block explaining why.
+- `app/package.json` — `version` → `0.5.0-dev58`.
+
+---
+
 ## [0.5.0-dev57] — 2026-05-07 — **`faulthandler` to capture the C-level abort + version-banner fix**
 
 dev56's `import site` _pth fix did **not** resolve rafag's relink. The
