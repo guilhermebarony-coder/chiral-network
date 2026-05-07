@@ -1,7 +1,7 @@
 {
   "name": "chiral-network",
   "productName": "Chiral Network",
-  "version": "0.5.0-dev52",
+  "version": "0.5.0-dev53",
   "description": "Chiral Network — DaVinci Resolve <-> After Effects roundtrip bridge",
   "main": "main.js",
   "scripts": {

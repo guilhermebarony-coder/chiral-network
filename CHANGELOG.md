@@ -13,6 +13,107 @@ bumps may break disk format).
 
 ---
 
+## [0.5.0-dev53] — 2026-05-07 — **Resolve DLL search path fix + relink import diagnostics**
+
+Tester field report on dev49 (also reproducible on dev52): relink
+silently fails with **no traceback, no FATAL line, no `.relink.json`
+written**. Status strip ends up reporting "Relink dispatched — no
+completion signal from Resolve" after the 6 s waiter timeout. The
+Resolve timeline never receives the new master, so v01 / v02 cards
+in the UI show "master missing" even though AE rendered the file
+to disk successfully.
+
+### Root cause
+
+The `relink.log` ends mid-flight at:
+
+```
+[…] Injecting into sys.path: C:\ProgramData\…\Modules
+```
+
+— and stops. No "FATAL", no traceback. That means the Python process
+is dying **between** the sys.path inject and the
+`import DaVinciResolveScript` line, in a way that bypasses Python's
+exception handler entirely. The dev47 ABI mismatch (3.13 vs 3.10)
+would have produced a clean ImportError; this is structurally
+different.
+
+The reason: `DaVinciResolveScript.py` dynamically loads
+`fusionscript.dll` from `C:\Program Files\Blackmagic Design\DaVinci
+Resolve\`. That DLL has **sibling** dependencies in the same folder
+(`BMDPanelAPI.dll`, `MathScript.dll`, runtime DLLs). When Resolve
+launches its own Python, the cwd / process path is inside Resolve's
+install dir so the Windows DLL loader finds those siblings
+naturally. When **our** vendored `python.exe` (in
+`<app>/resources/vendor/python/python.exe`) loads fusionscript, the
+loader searches its own directory, system dirs, and PATH — none of
+which contain Resolve's siblings. Some Windows configurations
+respond by aborting the process with no signal Python can catch.
+
+### Fix
+
+Add Resolve's install directory to the Windows DLL search path
+**before** the import attempt, via the Python 3.8+ Windows API
+`os.add_dll_directory(<dirname(RESOLVE_SCRIPT_LIB)>)`:
+
+```python
+lib = os.environ.get("RESOLVE_SCRIPT_LIB")
+if lib and sys.platform == "win32" and hasattr(os, "add_dll_directory"):
+    resolve_dir = os.path.dirname(lib)
+    if resolve_dir and os.path.isdir(resolve_dir):
+        os.add_dll_directory(resolve_dir)
+```
+
+### Added — diagnostic log lines around the import + scriptapp
+
+If a *future* silent crash slips through, the log now pinpoints
+exactly where:
+
+- `Adding DLL search directory: <path>` — before add_dll_directory.
+- `About to import DaVinciResolveScript...` — pre-import.
+- `DaVinciResolveScript imported OK` — post-import (proves we got past it).
+- `About to call dvr.scriptapp('Resolve')...` — pre-scriptapp.
+- `scriptapp returned: <None | "<Resolve handle>">` — post-scriptapp.
+
+Each `log()` call flushes the file before returning, so whichever
+line is *missing* identifies the dying step.
+
+### Files
+
+- `scripts/resolve/relink_latest_render.py` — `os.add_dll_directory`
+  call + 5 new diagnostic log lines, all inside `get_resolve()`.
+- `scripts/resolve/chiral_version.py` — `SCRIPT_VERSION` bumped
+  `dev8` → `dev9` so the Electron-side scripts-version check picks
+  up the change.
+- `app/package.json`: dev52 → dev53.
+- `README.md` / `README.pt-br.md`: tester-build pointer.
+
+149/149 tests still pass — change is in the standalone Resolve-side
+script; no library / renderer code touched.
+
+### Notes for testers (please attach to any retry)
+
+The new build will surface the failure precisely if it persists.
+Two files are useful in that case:
+
+1. `%APPDATA%/Chiral Network/logs/relink.log` (same place as
+   before — Python's own log, written through `log()`).
+2. `<projects root>/<project>/<shot>/.relink.stderr.log` — Python
+   stderr captured by the spawn helper. **This is the file that
+   contains any uncaught native error message** (Windows DLL load
+   failure dialog text, abort messages, etc.). It's overwritten on
+   each relink, so grab it right after a failure.
+
+### Known-not-yet-fixed
+
+The screenshot accompanying the dev49 report also shows the status
+strip stuck on "Rendering v01 · 140s elapsed (AE)" *after* AE has
+finished and v02 is already on disk. That's a separate state bug
+in the render-progress polling path, **not** addressed in dev53;
+will be triaged once the relink path is unblocked.
+
+---
+
 ## [0.5.0-dev52] — 2026-05-07 — **Forced AE step, Enter-key safety, instant filename refresh**
 
 Five threads, all driven by tester feedback on dev51:

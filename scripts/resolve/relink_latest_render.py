@@ -201,6 +201,28 @@ def get_resolve():
         if os.path.isfile(os.path.join(mod_dir, "DaVinciResolveScript.py")) and mod_dir not in sys.path:
             log("Injecting into sys.path: " + mod_dir)
             sys.path.insert(0, mod_dir)
+    # dev53 — register the Resolve install directory with the Windows DLL
+    # loader BEFORE importing fusionscript (which DaVinciResolveScript.py
+    # loads dynamically). fusionscript.dll has sibling .dll dependencies
+    # in the same folder (BMDPanelAPI.dll, MathScript.dll, etc.) that the
+    # loader can't find when our spawned python.exe lives elsewhere on
+    # disk — and on some Windows configurations, the failed sibling load
+    # aborts the process **without** Python ever raising ImportError, so
+    # the script dies silently right after the sys.path inject (a tester
+    # on dev49 hit exactly this — log truncates mid-flight, no traceback,
+    # no .relink.json written, Electron times out with no signal). Adding
+    # the directory to the DLL search path lets the loader find them.
+    # Python 3.8+ Windows-only API; harmless no-op elsewhere.
+    lib = os.environ.get("RESOLVE_SCRIPT_LIB")
+    if lib and sys.platform == "win32" and hasattr(os, "add_dll_directory"):
+        resolve_dir = os.path.dirname(lib)
+        if resolve_dir and os.path.isdir(resolve_dir):
+            try:
+                log("Adding DLL search directory: " + resolve_dir)
+                os.add_dll_directory(resolve_dir)
+            except Exception as e:
+                log("add_dll_directory failed (non-fatal): " + str(e))
+    log("About to import DaVinciResolveScript...")
     try:
         import DaVinciResolveScript as dvr  # type: ignore
     except ImportError as e:
@@ -215,7 +237,10 @@ def get_resolve():
             "See %APPDATA%/Chiral Network/logs/relink.log for sys.path dump."
             .format(e)
         )
+    log("DaVinciResolveScript imported OK")
+    log("About to call dvr.scriptapp('Resolve')...")
     r = dvr.scriptapp("Resolve")
+    log("scriptapp returned: " + ("None" if r is None else "<Resolve handle>"))
     if r is None:
         raise RuntimeError("scriptapp('Resolve') returned None — Resolve not running?")
     return r
