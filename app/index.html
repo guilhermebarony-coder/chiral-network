@@ -3109,6 +3109,19 @@
             if (window.api.setPendingShotName) {
                 window.api.setPendingShotName(v || '');
             }
+            // dev59 — setName now mirrors into job.label when the label
+            // was empty / matched the prior name, so the typed tag also
+            // becomes the display label everywhere (header, rail,
+            // breadcrumb). Reflect immediately rather than waiting for
+            // the 3s tick: paint the header and kick the rail. The Enter
+            // handler below already does a full refresh(); this lighter
+            // version is for the click-away path so we don't pay for a
+            // full info() round-trip on every blur.
+            if (r && typeof r.label === 'string' && !labelEditMode) {
+                const lblEl = $('shot-label-display');
+                if (lblEl) lblEl.textContent = r.label;
+            }
+            try { refreshRail(); } catch (_) {}
         });
         // dev52 — Enter explicitly commits the new filename tag AND
         // forces an immediate refresh of the rail / shot UI / breadcrumb

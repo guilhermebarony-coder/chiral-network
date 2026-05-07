@@ -13,6 +13,69 @@ bumps may break disk format).
 
 ---
 
+## [0.5.0-dev59] — 2026-05-07 — **Vault default size + filename-tag mirrors to shot label**
+
+Two QoL nudges while we wait on tester feedback for the dev57 relink
+diagnostics.
+
+### 1. Vault window default size: 1100×720 → 1400×860
+
+The list view's `USED` column was getting clipped at the default
+1100 px width on 1080p screens, forcing a manual resize on every
+open. 1400×860 gives every column room to breathe and still leaves a
+healthy margin on a typical 1920×1080 desktop. Users who've already
+resized larger keep their saved geometry — Electron's
+`remember-window-size` plugin isn't wired up here, but the new
+default applies on first open of every session, which is what the
+user feedback was actually about.
+
+Touched: `app/main.js` `openVaultWindow()`.
+
+### 2. Filename tag now mirrors into the shot's display label
+
+`anim-name` (the **Filename Tag** field in the Render Settings panel)
+and the shot **label** (the editable text in the shot header) used to
+be fully independent: typing a tag changed the render filename suffix
+but the shot still showed `Shot_003` everywhere. Users had to ALSO
+double-click the header to rename the shot for human-readable
+organization. Two fields, one obvious intent.
+
+dev59 wires them together with a one-way mirror policy. In
+`shot:setName`:
+
+| Prior `job.label`      | Behavior on setName                           |
+|------------------------|-----------------------------------------------|
+| empty / unset          | Mirror new name into `job.label`              |
+| equals prior `job.name`| Mirror — label was previously auto-set        |
+| anything else          | Preserve — user has set a custom freeform name|
+
+So the common case ("type a tag, see it everywhere") is one input,
+but power users who set a freeform label like `Adrian's intro shot
+(rev 2)` via the header double-click don't get it overwritten by a
+later edit to the filename tag.
+
+To re-link the two fields: clear the label via the header inline edit
+(empty → save). The next `setName` will mirror again.
+
+The renderer-side blur handler in `index.html` now repaints
+`#shot-label-display` and kicks `refreshRail()` immediately on commit
+so the new name appears in the project rail without waiting for the
+3 s polling tick. The Enter handler already did a full `refresh()`,
+which paints the label via the existing render path.
+
+Touched:
+- `app/main.js` `shot:setName` — conditional mirror, returns
+  `{ name, label }`.
+- `app/index.html` — `anim-name` blur handler reflects label and
+  refreshes rail.
+- `app/package.json` → `0.5.0-dev59`.
+
+Untouched: `shot:setLabel` IPC, the header double-click-to-rename
+flow, the rail's `job.label || shotName` fallback in `vault_pipeline.js`.
+The new mirror is a strict superset of the old behavior.
+
+---
+
 ## [0.5.0-dev58] — 2026-05-07 — **Zero-setup AE renders: use built-in Output Module templates**
 
 Testers were hitting `applyTemplate('_rt_mp4') failed: ...` on first

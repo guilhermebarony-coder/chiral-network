@@ -824,11 +824,44 @@ ipcMain.handle('shot:setTrack', (_e, trackIndex) =>
         return { trackIndex: job.resolveTrackIndex };
     }));
 
+// dev59 — setName ALSO mirrors into job.label so the tag the user types
+// in the render-settings panel propagates everywhere the shot is named:
+// shot header, project rail, breadcrumb. Mirroring is conditional so
+// power users who explicitly renamed via the header double-click don't
+// get their custom label overwritten:
+//   * job.label empty            → mirror (first-time tag)
+//   * job.label === prior name   → mirror (label was previously auto-set
+//                                   from setName and the user is just
+//                                   editing the same field)
+//   * job.label is anything else → preserve (user has set a freeform
+//                                   label that diverges from the tag,
+//                                   e.g. spaces / punctuation / a name
+//                                   that's longer than sanitizeName
+//                                   would allow). To re-link them the
+//                                   user can clear the label via the
+//                                   header inline-edit and the next
+//                                   setName will mirror again.
 ipcMain.handle('shot:setName', (_e, rawName) =>
     withJob(shotDir(), job => {
+        const prevName  = (typeof job.name  === 'string') ? job.name  : '';
+        const prevLabel = (typeof job.label === 'string') ? job.label : '';
         const clean = P.sanitizeName(rawName);
         if (clean) job.name = clean; else delete job.name;
-        return { name: clean };
+
+        // Mirror policy described above.
+        const labelWasMirrored = (!prevLabel) || (prevLabel === prevName);
+        if (labelWasMirrored) {
+            // Length-cap to match shot:setLabel's contract so downstream
+            // renderers see a consistent value regardless of which IPC
+            // handler set it.
+            const mirroredLabel = clean ? clean.slice(0, 80) : '';
+            if (mirroredLabel) job.label = mirroredLabel; else delete job.label;
+        }
+
+        return {
+            name:  clean,
+            label: (typeof job.label === 'string') ? job.label : '',
+        };
     }));
 
 // label is distinct from setName: pure display text, trimmed + length-capped
@@ -2162,7 +2195,12 @@ let vaultWin = null;
 function openVaultWindow() {
     if (vaultWin && !vaultWin.isDestroyed()) { vaultWin.focus(); return; }
     vaultWin = new BrowserWindow({
-        width: 1100, height: 720,
+        // dev59 — bumped from 1100x720. The list view's USED column was
+        // getting clipped at the default size on 1080p screens, so users
+        // had to manually resize on every open just to see all columns.
+        // 1400x860 gives every column room and leaves a healthy margin on
+        // a typical 1920x1080 desktop.
+        width: 1400, height: 860,
         title: 'Chiral Network — Vault',
         autoHideMenuBar: true,
         webPreferences: {
