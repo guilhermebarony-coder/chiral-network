@@ -13,6 +13,127 @@ bumps may break disk format).
 
 ---
 
+## [0.5.0-dev56] — 2026-05-07 — **🎯 Root cause: enable `site` init in vendored Python embed**
+
+The dev55 ctypes diagnostic immediately surfaced what we needed.
+rafag's log on dev55 reads:
+
+```
+Trying ctypes preload of: C:\Program Files\...\fusionscript.dll
+ctypes preload OK: handle=0x7ffc459e0000
+About to import DaVinciResolveScript...
+[ log ends ]
+```
+
+The `ctypes` preload **succeeded** — fusionscript maps into the
+process cleanly. So:
+- not a missing DLL,
+- not AV / Defender intervention (it would have blocked ctypes too),
+- not bitness mismatch,
+- not DllMain failing init.
+
+The kill happens **between** ctypes preload and importlib running
+`PyInit_fusionscript`. That points at one specific cause: the
+embedded Python's stripped runtime state.
+
+### Root cause
+
+`vendor/python/python310._pth` shipped with `#import site` (the
+default for Python embeddable distributions — site init is
+deliberately disabled to keep embed footprint small). With site
+disabled, CPython is only half-initialized:
+
+- no site-packages walk
+- no user-site init
+- no `sitecustomize` / `usercustomize`
+- the script's own directory is NOT added to `sys.path`
+  (which is why `from chiral_version import SCRIPT_VERSION` has
+  been silently failing in **every** relink log since dev1 — the
+  banner says "Chiral Network scripts vunknown" instead of the
+  real version)
+
+Resolve's `fusionscript` C extension is a CPython binary built
+against — and tested with — a fully-initialized standard CPython.
+Its `PyInit_fusionscript` callback assumes that init has happened
+(it dereferences runtime objects that site init populates). On a
+stripped embed those calls walk into NULLs / missing module
+references and the process dies during the C-level init, before
+Python's exception machinery exists.
+
+### Fix (one-liner)
+
+`vendor/python/python310._pth`:
+
+```diff
+ python310.zip
+ .
+
+-# Uncomment to run site.main() automatically
+-#import site
++# dev56 — site init REQUIRED for Resolve's fusionscript to load.
++import site
+```
+
+This single line enables full CPython startup. fusionscript's
+PyInit gets the runtime it expects → import succeeds.
+
+The same change *also* fixes the long-standing "vunknown" banner:
+with site enabled, `sys.path[0]` is the running script's
+directory, and `from chiral_version import SCRIPT_VERSION` finally
+resolves.
+
+### Why dev55's ctypes preload was decisive
+
+dev53 (`add_dll_directory`), dev54 (multi-candidate fusionscript
+discovery + verbose logging + fail-loud LIB check), and dev55
+(`PATH` prepend) collectively eliminated every other plausible
+hypothesis. The dev55 ctypes preload outcome (succeeded handle, then
+silent kill on importlib) was the new datapoint that pointed
+specifically at runtime init rather than at file paths or loader
+search. Without those previous instrumentation passes, this
+build's diagnosis would have been a guess.
+
+### Files
+
+- `vendor/python/python310._pth` — uncomment `import site`. The
+  comment block is rewritten as a dev56 design note so a future
+  reader doesn't undo it.
+- `scripts/resolve/chiral_version.py` — `SCRIPT_VERSION`
+  dev11 → dev12.
+- `app/package.json` — dev55 → dev56.
+- `README.md` / `README.pt-br.md` — tester-build pointer.
+
+149/149 tests passing.
+
+### Notes for testers
+
+This fix should be terminal for the relink path. After dev56:
+
+- The relink log banner should read `Chiral Network scripts v0.5.0-dev12`
+  on the very first line (the "vunknown" tell is gone — confirms
+  site init is working).
+- The `Trying ctypes preload of: …` line should still appear,
+  followed by `ctypes preload OK`.
+- New: `About to import DaVinciResolveScript...` should be
+  followed by `DaVinciResolveScript imported OK`,
+  `About to call dvr.scriptapp('Resolve')...`, and a successful
+  `scriptapp returned: <Resolve handle>`.
+- The Resolve timeline should receive the new master, the version
+  cards in the UI should flip to ✓ instead of "master missing".
+
+If something *still* fails: the new logging from dev54/dev55 will
+say exactly which step. We're now instrumented enough that a
+future regression points at itself.
+
+### Known-not-yet-fixed
+
+Carried over from dev53 — the status strip occasionally stuck on
+"Rendering vNN · Ns elapsed (AE)" after an AE render completes.
+That's a separate state bug in the render-progress polling path;
+will be triaged once the relink path is verified end-to-end.
+
+---
+
 ## [0.5.0-dev55] — 2026-05-07 — **ctypes preload diagnostic + PATH augmentation for fusionscript silent-abort**
 
 dev54 instrumentation paid off — for one tester (rafag, the
