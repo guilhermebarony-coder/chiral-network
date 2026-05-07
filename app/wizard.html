@@ -1,0 +1,172 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Roundtrip — Setup</title>
+    <style>
+        /* Reuses the dark theme from index.html. Inline to keep one file. */
+        body { font-family: Segoe UI, sans-serif; margin: 0; padding: 22px 26px;
+               background: #1e1e1e; color: #ddd; user-select: none; }
+        h1 { font-size: 18px; margin: 0 0 8px; color: #eee; font-weight: 600; }
+        p.muted { font-size: 12px; color: #999; margin: 0 0 14px; line-height: 1.5; }
+        small.muted { font-size: 11px; color: #777; display: block; margin-top: 6px; line-height: 1.4; }
+        code { background: #111; color: #cda; padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+
+        /* Progress dots */
+        .steps { display: flex; gap: 8px; margin-bottom: 16px; justify-content: center; }
+        .steps .dot { width: 22px; height: 22px; border-radius: 50%;
+                      background: #333; color: #777; font-size: 11px; font-weight: 600;
+                      display: flex; align-items: center; justify-content: center;
+                      border: 1px solid #444; }
+        .steps .dot.active { background: #2d7; color: #041; border-color: #2d7; }
+        .steps .dot.done   { background: #1e4a2a; color: #8f8; border-color: #2d7; }
+
+        /* Panes */
+        .pane { display: none; }
+        .pane.active { display: block; }
+
+        /* Checklist */
+        .checklist { list-style: none; padding: 0; margin: 10px 0 16px; }
+        .checklist li { padding: 7px 10px; background: #252525; border: 1px solid #333;
+                        border-radius: 4px; margin-bottom: 6px; font-size: 12px;
+                        display: flex; align-items: center; gap: 10px; }
+        .checklist .ico { font-size: 14px; width: 18px; display: inline-block; text-align: center; }
+        .checklist .ico.ok   { color: #4c4; }
+        .checklist .ico.warn { color: #d8a93a; }
+        .checklist .ico.fail { color: #e55; }
+        .checklist .ico.wait { color: #666; }
+        .checklist .detail { font-size: 10px; color: #777; margin-left: auto; max-width: 340px;
+                             overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                             direction: rtl; text-align: left; }
+        .checklist button.inline { background: #39c; color: #fff; border: 0;
+                                   padding: 3px 8px; font-size: 10px; border-radius: 3px;
+                                   cursor: pointer; margin-left: auto; }
+        .checklist button.inline:hover { background: #4af; }
+        .checklist button.inline.hidden { display: none; }
+
+        /* Fields */
+        .field { display: flex; align-items: center; gap: 6px; margin: 10px 0; }
+        .field input { flex: 1; background: #222; color: #ddd; padding: 6px 8px;
+                       border: 1px solid #555; border-radius: 3px; font-size: 12px;
+                       font-family: Consolas, monospace; }
+        .field button { background: #444; color: #ddd; border: 0; padding: 6px 12px;
+                        font-size: 11px; border-radius: 3px; cursor: pointer; }
+        .field button:hover { background: #555; }
+
+        /* Nav */
+        .nav { display: flex; gap: 8px; margin-top: 18px; justify-content: flex-end; }
+        .nav button { background: #2d7; color: #000; border: 0; padding: 7px 14px;
+                      font-size: 12px; font-weight: 600; border-radius: 4px; cursor: pointer; }
+        .nav button:hover { background: #3e8; }
+        .nav button.secondary { background: #444; color: #ddd; font-weight: 400; }
+        .nav button.secondary:hover { background: #555; }
+        .nav button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        .err { color: #e66; font-size: 11px; min-height: 14px; margin-top: 4px; }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+    <header class="steps">
+        <span class="dot active" data-n="1">1</span>
+        <span class="dot"        data-n="2">2</span>
+        <span class="dot"        data-n="3">3</span>
+        <span class="dot"        data-n="4">4</span>
+    </header>
+
+    <!-- Step 1: Detect -->
+    <section class="pane active" data-pane="1">
+        <h1>Welcome to Roundtrip</h1>
+        <p class="muted">Let's find the software Roundtrip needs.
+           This takes a few seconds.</p>
+        <ul id="detect-list" class="checklist">
+            <li data-k="ae"><span class="ico wait">&hellip;</span>
+                <span class="lbl">After Effects</span>
+                <span class="detail"></span></li>
+            <li data-k="resolve"><span class="ico wait">&hellip;</span>
+                <span class="lbl">DaVinci Resolve scripts folder</span>
+                <span class="detail"></span></li>
+            <li data-k="resolveSdk"><span class="ico wait">&hellip;</span>
+                <span class="lbl">DaVinci Resolve Scripting SDK</span>
+                <span class="detail"></span></li>
+            <li data-k="ffmpeg"><span class="ico wait">&hellip;</span>
+                <span class="lbl">FFmpeg (preview compression)</span>
+                <span class="detail"></span></li>
+            <li data-k="python"><span class="ico wait">&hellip;</span>
+                <span class="lbl">Python (required for Resolve scripting)</span>
+                <span class="detail"></span></li>
+        </ul>
+        <nav class="nav">
+            <button id="btn-cancel-1" class="secondary">Cancel</button>
+            <button id="btn-next-1">Next &rarr;</button>
+        </nav>
+    </section>
+
+    <!-- Step 2: Fix AE (conditional) -->
+    <section class="pane" data-pane="2">
+        <h1>Where is After Effects installed?</h1>
+        <p class="muted">Point us to <code>AfterFX.exe</code>. It's usually at
+           <code>C:\Program Files\Adobe\Adobe After Effects YYYY\Support Files\</code>.</p>
+        <div class="field">
+            <input id="in-ae" readonly placeholder="Not selected">
+            <button id="pick-ae">Browse&hellip;</button>
+        </div>
+        <div class="err" id="err-ae"></div>
+        <nav class="nav">
+            <button id="btn-back-2" class="secondary">&larr; Back</button>
+            <button id="btn-next-2" disabled>Next &rarr;</button>
+        </nav>
+    </section>
+
+    <!-- Step 3: Roundtrip root -->
+    <section class="pane" data-pane="3">
+        <h1>Where should your projects live?</h1>
+        <p class="muted">Roundtrip will store shots and renders in this folder.
+           We'll create it if it doesn't exist yet.</p>
+        <div class="field">
+            <input id="in-root" readonly>
+            <button id="pick-root">Browse&hellip;</button>
+        </div>
+        <small class="muted">Existing files inside this folder are never touched.</small>
+        <div class="err" id="err-root"></div>
+        <nav class="nav">
+            <button id="btn-back-3" class="secondary">&larr; Back</button>
+            <button id="btn-next-3">Next &rarr;</button>
+        </nav>
+    </section>
+
+    <!-- Step 4: Ready -->
+    <section class="pane" data-pane="4">
+        <h1>You're ready</h1>
+        <p class="muted">Final check before we hand you the main window.</p>
+        <ul id="ready-list" class="checklist">
+            <li data-k="ae"><span class="ico wait">&hellip;</span>
+                <span class="lbl">After Effects</span>
+                <span class="detail"></span></li>
+            <li data-k="resolve"><span class="ico wait">&hellip;</span>
+                <span class="lbl">Resolve scripts</span>
+                <button id="btn-install-resolve" class="inline hidden">Install now</button>
+                <span class="detail"></span></li>
+            <li data-k="ffmpeg"><span class="ico wait">&hellip;</span>
+                <span class="lbl">FFmpeg</span>
+                <span class="detail"></span></li>
+            <li data-k="python"><span class="ico wait">&hellip;</span>
+                <span class="lbl">Python (Resolve scripting)</span>
+                <button id="btn-install-python" class="inline hidden">Install Python</button>
+                <span class="detail"></span></li>
+            <li data-k="root"><span class="ico wait">&hellip;</span>
+                <span class="lbl">Project folder</span>
+                <span class="detail"></span></li>
+        </ul>
+        <div class="err" id="err-finish"></div>
+        <nav class="nav">
+            <button id="btn-back-4" class="secondary">&larr; Back</button>
+            <button id="btn-retry"  class="secondary">Re-check</button>
+            <button id="btn-finish" disabled>Start using Roundtrip</button>
+        </nav>
+    </section>
+
+    <script src="wizard.js"></script>
+</body>
+</html>

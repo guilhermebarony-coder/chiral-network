@@ -1,0 +1,58 @@
+{
+  "name": "chiral-network",
+  "productName": "Chiral Network",
+  "version": "0.5.0-dev49",
+  "description": "Chiral Network — DaVinci Resolve <-> After Effects roundtrip bridge",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win --x64",
+    "test":     "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.chiral.network",
+    "productName": "Chiral Network",
+    "asar": true,
+    "directories": {
+      "output": "../dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "**/*",
+      "!settings.json",
+      "!**/.DS_Store",
+      "!**/node_modules/*/{README,readme,CHANGELOG,changelog,LICENSE,license}*",
+      "!**/node_modules/*/{test,tests,__tests__,docs,example,examples}",
+      "!**/*.map"
+    ],
+    "extraResources": [
+      {
+        "from": "../scripts",
+        "to": "scripts",
+        "filter": [
+          "ae/*.jsx",
+          "resolve/*.py",
+          "!resolve/test_*.py",
+          "!resolve/*_test.py"
+        ]
+      },
+      {
+        "from": "../vendor",
+        "to": "vendor",
+        "filter": ["**/*"]
+      }
+    ],
+    "win": {
+      "target": [
+        { "target": "dir", "arch": ["x64"] }
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "signAndEditExecutable": false
+    }
+  }
+}

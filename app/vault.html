@@ -1,0 +1,2437 @@
+<!DOCTYPE html>
+<!--
+  vault.html — 0.5.0-dev26.
+
+  Hybrid Sidebar / Top Bar layout. Ported from the dev26 design handoff
+  ("Vault Redesign.html") with a performance-first filter:
+    * No backdrop-filter (heavy paint cost in Chromium).
+    * No linear gradients on chrome (solid colors only).
+    * No Google Fonts fetch (system stack — feels like part of the OS).
+    * No custom drag ghost (browser native drag image is free).
+    * No list view (grid only — list mode adds complexity for marginal gain).
+    * No density picker (fixed cozy — can re-add later if requested).
+    * No window-chrome row (Electron handles native frame).
+    * No toast component (status bar already serves the same purpose).
+
+  Kept from the design:
+    * Cool-neutral dark palette (oklch tokens — Chromium 126 handles
+      these natively, no perf concern).
+    * App shell: sidebar | main, with status bar at bottom.
+    * Sidebar with pinned views (All / Unfiled / Recent), folders section,
+      vault footer stats, sidebar filter input.
+    * Top bar with breadcrumb, search, refresh, rebuild.
+    * Tag chip strip (separate from text search) showing only tags
+      present in the current view.
+    * Card visual hierarchy: thumb (with template / resolution badges) →
+      title → meta → tags → action row.
+    * Drag-and-drop with `data-drag-target` armed state on every valid
+      pill/sidebar entry, `data-drag-over` solid-ring active state.
+-->
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Chiral Network — Vault</title>
+    <style>
+        /* dev28 — bundled Inter + JetBrains Mono. Per design spec the
+           UI must use Inter and technical/metadata text JetBrains Mono.
+           Files live under app/assets/fonts/ and ship via the existing
+           electron-builder asar packing. font-display:swap means the
+           system fallback shows for ~100ms while the woff2 decodes;
+           after that the real fonts replace seamlessly. */
+        @font-face {
+            font-family: 'Inter'; font-style: normal; font-weight: 400;
+            font-display: swap;
+            src: url('assets/fonts/Inter-Regular.woff2') format('woff2');
+        }
+        @font-face {
+            font-family: 'Inter'; font-style: normal; font-weight: 500;
+            font-display: swap;
+            src: url('assets/fonts/Inter-Medium.woff2') format('woff2');
+        }
+        @font-face {
+            font-family: 'Inter'; font-style: normal; font-weight: 600;
+            font-display: swap;
+            src: url('assets/fonts/Inter-SemiBold.woff2') format('woff2');
+        }
+        @font-face {
+            font-family: 'Inter'; font-style: normal; font-weight: 700;
+            font-display: swap;
+            src: url('assets/fonts/Inter-Bold.woff2') format('woff2');
+        }
+        @font-face {
+            font-family: 'JetBrains Mono'; font-style: normal; font-weight: 400;
+            font-display: swap;
+            src: url('assets/fonts/JetBrainsMono-Regular.woff2') format('woff2');
+        }
+        @font-face {
+            font-family: 'JetBrains Mono'; font-style: normal; font-weight: 500;
+            font-display: swap;
+            src: url('assets/fonts/JetBrainsMono-Medium.woff2') format('woff2');
+        }
+        @font-face {
+            font-family: 'JetBrains Mono'; font-style: normal; font-weight: 600;
+            font-display: swap;
+            src: url('assets/fonts/JetBrainsMono-SemiBold.woff2') format('woff2');
+        }
+
+        :root {
+            /* Cool neutral grays — no warm undertone (Linear / VS Code lineage). */
+            --bg-0: oklch(0.155 0.005 250);
+            --bg-1: oklch(0.185 0.006 250);
+            --bg-2: oklch(0.215 0.006 250);
+            --bg-3: oklch(0.245 0.007 250);
+            --bg-4: oklch(0.285 0.008 250);
+
+            --line-1: oklch(0.27 0.008 250);
+            --line-2: oklch(0.32 0.01 250);
+
+            --fg-0: oklch(0.96 0.005 250);
+            --fg-1: oklch(0.78 0.008 250);
+            --fg-2: oklch(0.6 0.008 250);
+            --fg-3: oklch(0.46 0.008 250);
+
+            /* dev31 — Vault swings back to indigo. Reasoning: gold is
+               the "active workbench" signal in the Command Center
+               (renders, AE handoffs, primary CTAs). Vault is the
+               library — passive, browse-y. Cool indigo reads as that
+               temperature shift without breaking the shared neutral
+               grays. dev28 unified everything in gold; that flattened
+               the hierarchy between the two windows. dev31 gives them
+               back their voices. */
+            --accent-h: 230;
+            --accent: oklch(0.72 0.13 var(--accent-h));
+            --accent-strong: oklch(0.8 0.15 var(--accent-h));
+            --accent-soft: oklch(0.72 0.13 var(--accent-h) / 0.16);
+            --accent-line: oklch(0.72 0.13 var(--accent-h) / 0.5);
+
+            --danger: oklch(0.65 0.18 25);
+            --danger-soft: oklch(0.65 0.18 25 / 0.14);
+            --warn: oklch(0.78 0.13 75);
+            --ok: oklch(0.72 0.13 155);
+
+            /* dev28 — local Inter / JetBrains Mono ahead of system fallback. */
+            --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            --font-mono: 'JetBrains Mono', ui-monospace, Consolas, "SF Mono", Menlo, monospace;
+
+            --radius-1: 4px;
+            --radius-2: 6px;
+            --radius-3: 8px;
+        }
+
+        * { box-sizing: border-box; }
+        html, body {
+            margin: 0; padding: 0; height: 100%;
+            background: var(--bg-0); color: var(--fg-0);
+            font-family: var(--font-sans); font-size: 13px; line-height: 1.4;
+            -webkit-font-smoothing: antialiased;
+        }
+        button {
+            font-family: inherit; font-size: inherit; color: inherit;
+            background: transparent; border: 0; padding: 0; cursor: pointer;
+        }
+        input { font-family: inherit; }
+        input:focus { outline: none; }
+        .mono { font-family: var(--font-mono); }
+
+        /* ---- Shell ---------------------------------------------------- */
+        .app-shell {
+            display: grid;
+            grid-template-rows: auto 1fr auto;
+            grid-template-columns: auto 1fr;
+            height: 100vh;
+            background: var(--bg-0);
+        }
+        .app-topbar    { grid-column: 1 / -1; }
+        .app-sidebar   { grid-row: 2; grid-column: 1; }
+        .app-main      { grid-row: 2; grid-column: 2; min-width: 0; min-height: 0; overflow: hidden; }
+        .app-statusbar { grid-column: 1 / -1; }
+
+        /* ---- Top bar -------------------------------------------------- */
+        .topbar {
+            background: var(--bg-1);
+            border-bottom: 1px solid var(--line-1);
+        }
+        .actionbar {
+            display: flex; align-items: center; gap: 8px;
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--line-1);
+        }
+        .breadcrumb {
+            display: flex; align-items: center; gap: 6px;
+            min-width: 0; flex-shrink: 0;
+        }
+        .bc-app    { color: var(--fg-3); font-size: 12px; }
+        .bc-sep    { color: var(--fg-3); font-size: 11px; }
+        .bc-current { color: var(--fg-0); font-weight: 600; font-size: 12.5px; }
+        .bc-count  {
+            color: var(--fg-3); font-family: var(--font-mono); font-size: 11px;
+            margin-left: 8px; padding-left: 10px; border-left: 1px solid var(--line-1);
+        }
+        .actionbar-spacer { flex: 1; }
+
+        .search-shell {
+            display: flex; align-items: center; gap: 8px;
+            height: 28px; padding: 0 10px;
+            background: var(--bg-0); border: 1px solid var(--line-1);
+            border-radius: var(--radius-2);
+            color: var(--fg-2);
+            width: 320px;
+            transition: border-color 120ms, background 120ms;
+        }
+        .search-shell:focus-within { border-color: var(--accent-line); background: var(--bg-2); }
+        .search-input {
+            flex: 1; background: transparent; border: 0;
+            color: var(--fg-0); font-size: 12.5px; min-width: 0;
+        }
+        .search-input::placeholder { color: var(--fg-3); }
+
+        .btn {
+            display: inline-flex; align-items: center; gap: 6px;
+            height: 28px; padding: 0 10px;
+            border-radius: var(--radius-2);
+            font-size: 12.5px; font-weight: 500;
+            white-space: nowrap;
+            transition: background 120ms, color 120ms, border-color 120ms;
+        }
+        .btn-ghost { color: var(--fg-1); border: 1px solid var(--line-1); background: var(--bg-0); }
+        .btn-ghost:hover { background: var(--bg-3); color: var(--fg-0); }
+        /* dev33 — primary button (gold accent). Used for "+ Add asset"
+           in the toolbar. Same shape as ghost so the row alignment
+           stays clean; just inverted for prominence. */
+        .btn-primary {
+            color: var(--bg-0);
+            background: var(--accent);
+            border: 1px solid var(--accent);
+            font-weight: 600;
+        }
+        .btn-primary:hover {
+            background: var(--accent-strong);
+            border-color: var(--accent-strong);
+        }
+        .btn-primary:disabled {
+            opacity: 0.5; cursor: not-allowed;
+        }
+
+        /* dev34 — View toggle pill. Two icon buttons sharing a single
+           rounded shell. The selected one fills with --bg-3 (subtle
+           inset look) and the icon promotes to --fg-0; the inactive
+           side keeps --fg-3 so the eye reads the active state from
+           contrast alone. Same height as .btn so it lines up with the
+           toolbar row. */
+        .view-toggle {
+            display: inline-flex; align-items: center;
+            height: 28px;
+            border: 1px solid var(--line-1);
+            border-radius: var(--radius-2);
+            background: var(--bg-0);
+            overflow: hidden;
+        }
+        .view-toggle button {
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 30px; height: 100%;
+            background: transparent; color: var(--fg-3);
+            border: 0; cursor: pointer;
+            transition: background 120ms, color 120ms;
+        }
+        .view-toggle button:hover { color: var(--fg-1); background: var(--bg-2); }
+        .view-toggle button[data-active="true"] {
+            background: var(--bg-3); color: var(--fg-0);
+        }
+        .view-toggle button + button { border-left: 1px solid var(--line-1); }
+        .view-toggle svg { width: 14px; height: 14px; }
+
+        /* Tag bar ------------------------------------------------------- */
+        .tagbar {
+            display: flex; align-items: center; gap: 10px;
+            padding: 6px 12px;
+            background: var(--bg-1);
+            min-height: 36px;
+        }
+        .tagbar-label {
+            display: inline-flex; align-items: center; gap: 5px;
+            color: var(--fg-3);
+            font-size: 11px; font-family: var(--font-mono);
+            text-transform: uppercase; letter-spacing: 0.06em;
+            flex-shrink: 0;
+            padding-right: 10px;
+            border-right: 1px solid var(--line-1);
+        }
+        .tagbar-scroll {
+            display: flex; align-items: center; gap: 4px;
+            overflow-x: auto;
+            scrollbar-width: none;
+            flex: 1; min-width: 0;
+        }
+        .tagbar-scroll::-webkit-scrollbar { display: none; }
+        .tagbar-empty { color: var(--fg-3); font-size: 11.5px; font-style: italic; }
+
+        .tag-chip {
+            --h: var(--tag-hue, 250);
+            display: inline-flex; align-items: center; gap: 6px;
+            height: 22px; padding: 0 9px;
+            border-radius: 999px;
+            background: transparent;
+            border: 1px solid var(--line-1);
+            color: var(--fg-1);
+            font-size: 11.5px; font-weight: 500;
+            flex-shrink: 0;
+            transition: background 100ms, color 100ms, border-color 100ms;
+        }
+        .tag-chip:hover {
+            background: oklch(0.3 0.04 var(--h) / 0.4);
+            border-color: oklch(0.6 0.1 var(--h) / 0.5);
+            color: var(--fg-0);
+        }
+        .tag-chip[data-active="true"] {
+            background: oklch(0.5 0.13 var(--h) / 0.22);
+            border-color: oklch(0.65 0.14 var(--h) / 0.55);
+            color: oklch(0.92 0.05 var(--h));
+        }
+        .tag-chip-dot {
+            width: 6px; height: 6px;
+            border-radius: 999px;
+            background: oklch(0.7 0.14 var(--h));
+        }
+        .tag-chip-count {
+            font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-3);
+        }
+        .tag-chip[data-active="true"] .tag-chip-count { color: oklch(0.85 0.05 var(--h)); }
+        .tag-chip-clear {
+            background: var(--danger-soft);
+            border-color: oklch(0.65 0.18 25 / 0.4);
+            color: oklch(0.85 0.1 25);
+        }
+        .tag-chip-clear:hover {
+            background: oklch(0.65 0.18 25 / 0.22);
+            color: oklch(0.95 0.06 25);
+        }
+
+        /* ---- Sidebar -------------------------------------------------- */
+        .sidebar {
+            height: 100%;
+            background: var(--bg-1);
+            border-right: 1px solid var(--line-1);
+            overflow: hidden;
+            flex-shrink: 0;
+            transition: width 180ms ease;
+            width: 240px;
+        }
+        /* dev27 — collapsed mode. Sidebar shrinks to a single 52px
+           column. Every text-bearing child is hidden; the badge centers
+           in the header, every nav item centers its icon. The active-
+           item ::before stripe is hidden too — it's noise without the
+           accompanying label. */
+        body[data-sb-collapsed="1"] .sidebar { width: 52px; }
+        body[data-sb-collapsed="1"] .sb-name,
+        body[data-sb-collapsed="1"] .sb-count,
+        body[data-sb-collapsed="1"] .sb-section-label,
+        body[data-sb-collapsed="1"] .sb-vault-meta,
+        body[data-sb-collapsed="1"] .sb-filter,
+        body[data-sb-collapsed="1"] .sb-footer { display: none; }
+        /* Header centers the badge; pad symmetrically so left/right
+           alignment matches and the badge doesn't drift toward an edge. */
+        body[data-sb-collapsed="1"] .sb-header {
+            padding: 10px 0;
+            justify-content: center;
+        }
+        /* Nav items: full-width flex with center-aligned icon. Removing
+           horizontal padding here is what kills any visible drift. */
+        body[data-sb-collapsed="1"] .sb-item {
+            justify-content: center;
+            padding: 0;
+            gap: 0;
+        }
+        body[data-sb-collapsed="1"] .sb-item[data-active="true"]::before { display: none; }
+        body[data-sb-collapsed="1"] .sb-section { padding: 6px 6px 4px; }
+
+        .sidebar-inner {
+            height: 100%;
+            display: flex; flex-direction: column;
+            overflow: hidden;
+        }
+
+        .sb-header {
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--line-1);
+            display: flex; align-items: center; gap: 10px;
+        }
+        /* dev27 — badge is interactive; click anywhere on it toggles
+           collapse. Subtle hover lift signals "you can click this"
+           without adding a floating chevron. */
+        .sb-vault-badge {
+            width: 28px; height: 28px;
+            border-radius: var(--radius-2);
+            display: flex; align-items: center; justify-content: center;
+            background: var(--bg-3);
+            border: 1px solid var(--line-2);
+            color: var(--accent-strong);
+            flex-shrink: 0;
+            font-size: 14px;
+            cursor: pointer;
+            transition: background 100ms, border-color 100ms, color 100ms;
+        }
+        .sb-vault-badge:hover {
+            background: var(--bg-4);
+            border-color: var(--accent-line);
+            color: var(--accent-strong);
+        }
+        .sb-vault-badge:active { background: var(--bg-3); }
+        .sb-vault-badge:focus-visible {
+            outline: 1px solid var(--accent-line);
+            outline-offset: 1px;
+        }
+        .sb-vault-meta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+        .sb-vault-title { font-weight: 600; font-size: 13px; color: var(--fg-0); }
+        .sb-vault-path {
+            font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-3);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+
+        .sb-filter {
+            display: flex; align-items: center; gap: 6px;
+            margin: 8px 8px 4px;
+            padding: 0 8px;
+            height: 26px;
+            background: var(--bg-0);
+            border: 1px solid var(--line-1);
+            border-radius: var(--radius-2);
+            color: var(--fg-3);
+        }
+        .sb-filter:focus-within { border-color: var(--accent-line); }
+        .sb-filter-input {
+            flex: 1; background: transparent; border: 0;
+            color: var(--fg-0); font-size: 12px; min-width: 0;
+        }
+        .sb-filter-input::placeholder { color: var(--fg-3); }
+
+        .sb-scroll {
+            flex: 1;
+            overflow-y: auto;
+            overflow-x: hidden;
+        }
+        .sb-scroll::-webkit-scrollbar { width: 8px; }
+        .sb-scroll::-webkit-scrollbar-track { background: transparent; }
+        .sb-scroll::-webkit-scrollbar-thumb { background: var(--bg-3); border-radius: 999px; }
+
+        .sb-section { padding: 6px 6px 4px; border-bottom: 1px solid var(--line-1); }
+        .sb-section:last-of-type { border-bottom: 0; }
+        .sb-section-label {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 8px 8px 4px;
+            font-family: var(--font-mono);
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--fg-3);
+        }
+        .sb-section-action {
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 18px; height: 18px;
+            color: var(--fg-3); border-radius: 3px;
+        }
+        .sb-section-action:hover { background: var(--bg-3); color: var(--fg-0); }
+
+        .sb-item {
+            display: flex; align-items: center; gap: 6px;
+            width: 100%;
+            height: 28px;
+            padding: 0 8px;
+            border-radius: var(--radius-2);
+            color: var(--fg-1);
+            font-size: 12.5px; text-align: left;
+            position: relative;
+            transition: background 80ms, color 80ms;
+        }
+        .sb-item:hover { background: var(--bg-3); color: var(--fg-0); }
+        .sb-item[data-active="true"] {
+            background: var(--bg-3);
+            color: var(--fg-0);
+            box-shadow: inset 0 0 0 1px var(--line-2);
+        }
+        .sb-item[data-active="true"]::before {
+            content: ''; position: absolute; left: 0; top: 6px; bottom: 6px;
+            width: 2px;
+            background: var(--accent-strong);
+            border-radius: 2px;
+            margin-left: -1px;
+        }
+        .sb-icon {
+            width: 14px; height: 14px;
+            display: inline-flex; align-items: center; justify-content: center;
+            color: var(--fg-2); flex-shrink: 0;
+            font-size: 12px;
+        }
+        /* dev31 — SVG icons render at the container size; stroke-only
+           lines stay crisp under transition. No fill, no shadow, no
+           filter — pure stroke paint. */
+        .sb-icon svg {
+            width: 14px; height: 14px;
+            stroke-width: 1.6;
+        }
+        .sb-item:hover .sb-icon, .sb-item[data-active="true"] .sb-icon { color: var(--accent-strong); }
+        .sb-name {
+            flex: 1; min-width: 0;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .sb-count {
+            font-family: var(--font-mono); font-size: 10.5px;
+            color: var(--fg-3); flex-shrink: 0;
+        }
+
+        /* Drop targets — armed when something is being dragged. */
+        .sb-item[data-drag-target="true"]:not([data-drag-over="true"])::after {
+            content: '';
+            position: absolute; inset: 0;
+            border: 1px dashed oklch(0.7 0.14 var(--accent-h) / 0.18);
+            border-radius: var(--radius-2);
+            pointer-events: none;
+        }
+        .sb-item[data-drag-over="true"] {
+            background: var(--accent-soft);
+            color: var(--fg-0);
+        }
+        .sb-item[data-drag-over="true"]::after {
+            content: '';
+            position: absolute; inset: 0;
+            border: 1px solid var(--accent-strong);
+            border-radius: var(--radius-2);
+            box-shadow: 0 0 0 3px oklch(0.7 0.14 var(--accent-h) / 0.18);
+            pointer-events: none;
+        }
+        .sb-item[data-drag-over="true"] .sb-icon { color: var(--accent-strong); }
+
+        .sb-footer {
+            margin-top: auto;
+            padding: 10px 12px;
+            border-top: 1px solid var(--line-1);
+            display: flex; flex-direction: column; gap: 4px;
+        }
+        .sb-stat { display: flex; justify-content: space-between; font-size: 11px; }
+        .sb-stat-label {
+            color: var(--fg-3); font-family: var(--font-mono);
+            text-transform: uppercase; letter-spacing: 0.06em; font-size: 10px;
+        }
+        .sb-stat-value {
+            color: var(--fg-1); font-family: var(--font-mono); font-size: 11px;
+        }
+
+        /* ---- Main canvas --------------------------------------------- */
+        .canvas {
+            height: 100%;
+            display: flex; flex-direction: column;
+            background: var(--bg-0);
+            overflow: hidden;
+        }
+        .canvas-scroll {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px 16px 32px;
+        }
+        .canvas-scroll::-webkit-scrollbar { width: 12px; }
+        .canvas-scroll::-webkit-scrollbar-track { background: transparent; }
+        .canvas-scroll::-webkit-scrollbar-thumb {
+            background: var(--bg-3); border: 3px solid var(--bg-0); border-radius: 999px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 12px;
+        }
+
+        /* dev34 — List view. Same data as the grid card, projected
+           into a row whose columns line up with a fixed header.
+           Single CSS grid-template handed to both header and rows so
+           changing one column width keeps the table aligned. */
+        .list {
+            display: flex; flex-direction: column;
+            border: 1px solid var(--line-1);
+            border-radius: var(--radius-3);
+            background: var(--bg-2);
+            overflow: hidden;
+        }
+        .list-row {
+            display: grid;
+            grid-template-columns:
+                56px              /* thumb */
+                minmax(220px, 2fr)/* asset (name + origin) */
+                minmax(160px, 1.2fr)/* tags */
+                100px             /* resolution */
+                80px              /* duration */
+                85px              /* size  (dev37) */
+                85px              /* used */
+                100px             /* added */
+                170px;            /* actions */
+            align-items: center;
+            gap: 12px;
+            padding: 8px 14px;
+            border-bottom: 1px solid var(--line-1);
+        }
+        .list-row:last-child { border-bottom: 0; }
+        .list-head {
+            background: var(--bg-1);
+            color: var(--fg-3);
+            font-size: 10.5px;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            padding-top: 10px; padding-bottom: 10px;
+        }
+        /* dev36 — sortable header cells. The arrow span is always
+           present so the column width doesn't jump when the active
+           sort moves; only the active cell renders the glyph. */
+        .list-head-sortable {
+            display: inline-flex; align-items: center; gap: 4px;
+            cursor: pointer;
+            user-select: none;
+            transition: color 120ms;
+        }
+        .list-head-sortable:hover { color: var(--fg-1); }
+        .list-head-sortable[data-sort-active="true"] { color: var(--fg-0); }
+        .list-head-arrow {
+            display: inline-block;
+            width: 8px;
+            font-size: 9px;
+            opacity: 0;
+            transition: opacity 120ms;
+        }
+        .list-head-sortable[data-sort-active="true"] .list-head-arrow { opacity: 1; }
+        .list-head-sortable[data-sort-dir="asc"]  .list-head-arrow::before { content: "▲"; }
+        .list-head-sortable[data-sort-dir="desc"] .list-head-arrow::before { content: "▼"; }
+        .list-body { background: var(--bg-2); }
+        .list-body .list-row {
+            cursor: grab;
+            transition: background 120ms;
+        }
+        .list-body .list-row:hover { background: var(--bg-3); }
+        .list-body .list-row[data-dragging="true"] { opacity: 0.45; }
+        .list-thumb {
+            width: 48px; height: 28px;
+            border-radius: var(--radius-1);
+            background: var(--bg-1);
+            border: 1px solid var(--line-1);
+            overflow: hidden;
+            display: flex; align-items: center; justify-content: center;
+            position: relative;
+            flex-shrink: 0;
+        }
+        .list-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .list-thumb .list-thumb-ph {
+            font-size: 8px; color: var(--fg-3);
+            text-transform: uppercase; letter-spacing: 0.05em;
+        }
+        .list-asset-name {
+            color: var(--fg-0); font-size: 13px; font-weight: 600;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .list-asset-origin {
+            color: var(--fg-3); font-size: 11px;
+            margin-top: 2px;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .list-asset-origin .mono { font-family: var(--font-mono); }
+        .list-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+        .list-tag {
+            display: inline-flex; align-items: center;
+            height: 18px; padding: 0 7px;
+            border-radius: 999px;
+            background: var(--bg-1); color: var(--fg-2);
+            border: 1px solid var(--line-1);
+            font-size: 10.5px;
+        }
+        .list-tag-more { color: var(--fg-3); font-size: 10.5px; align-self: center; }
+        .list-cell-mono {
+            color: var(--fg-1); font-size: 11.5px;
+            font-family: var(--font-mono);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .list-cell-used[data-zero="true"]  { color: var(--fg-3); }
+        .list-cell-used[data-zero="false"] { color: var(--accent); }
+        .list-actions {
+            display: flex; align-items: center; gap: 6px;
+            justify-content: flex-end;
+            position: relative;
+        }
+        .list-action {
+            display: inline-flex; align-items: center; justify-content: center;
+            height: 26px; padding: 0 10px;
+            border: 1px solid var(--line-1);
+            border-radius: var(--radius-2);
+            background: var(--bg-0); color: var(--fg-1);
+            font-size: 11.5px; font-weight: 500;
+            cursor: pointer;
+            transition: background 120ms, color 120ms, border-color 120ms;
+        }
+        .list-action:hover { background: var(--bg-3); color: var(--fg-0); border-color: var(--line-2); }
+        .list-action-primary {
+            background: var(--accent); color: var(--bg-0);
+            border-color: var(--accent);
+        }
+        .list-action-primary:hover {
+            background: var(--accent-strong);
+            border-color: var(--accent-strong);
+            color: var(--bg-0);
+        }
+        .list-kebab {
+            width: 26px; height: 26px;
+            border: 1px solid var(--line-1);
+            border-radius: var(--radius-2);
+            background: var(--bg-0); color: var(--fg-2);
+            cursor: pointer;
+            font-size: 14px; line-height: 1;
+            display: inline-flex; align-items: center; justify-content: center;
+            transition: background 120ms, color 120ms, border-color 120ms;
+        }
+        .list-kebab:hover { background: var(--bg-3); color: var(--fg-0); border-color: var(--line-2); }
+        .list-kebab-menu {
+            position: absolute; right: 0; top: calc(100% + 4px);
+            background: var(--bg-2);
+            border: 1px solid var(--line-2);
+            border-radius: var(--radius-2);
+            box-shadow: 0 8px 20px rgba(0,0,0,0.35);
+            padding: 4px;
+            min-width: 160px;
+            display: none;
+            z-index: 30;
+        }
+        .list-kebab-menu[data-open="true"] { display: block; }
+        .list-kebab-item {
+            display: block; width: 100%;
+            padding: 6px 10px;
+            background: transparent; border: 0;
+            color: var(--fg-1); font-size: 12px; text-align: left;
+            border-radius: var(--radius-1);
+            cursor: pointer;
+        }
+        .list-kebab-item:hover { background: var(--bg-3); color: var(--fg-0); }
+        .list-kebab-item-danger { color: var(--danger); }
+        .list-kebab-item-danger:hover { background: var(--danger-soft); color: var(--danger); }
+
+        .empty {
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            padding: 60px 20px;
+            text-align: center;
+            color: var(--fg-2);
+        }
+        .empty-title { color: var(--fg-0); font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+        .empty-sub   { font-size: 13px; max-width: 480px; line-height: 1.5; }
+
+        /* ---- Card ---------------------------------------------------- */
+        .card {
+            background: var(--bg-2);
+            border: 1px solid var(--line-1);
+            border-radius: var(--radius-3);
+            overflow: hidden;
+            display: flex; flex-direction: column;
+            transition: border-color 120ms;
+            cursor: grab;
+            position: relative;
+        }
+        .card:hover { border-color: var(--line-2); }
+        .card:active { cursor: grabbing; }
+        .card[data-dragging="true"] { opacity: 0.45; }
+
+        .card-thumb-wrap {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            background: var(--bg-1);
+            border-bottom: 1px solid var(--line-1);
+            display: flex; align-items: center; justify-content: center;
+            color: var(--fg-3); font-size: 11px;
+            overflow: hidden;
+        }
+        .card-thumb-wrap img,
+        .card-thumb-wrap video {
+            position: absolute; inset: 0;
+            width: 100%; height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+        .card-thumb-icon { font-size: 32px; color: var(--accent); opacity: 0.55; }
+
+        .card-badges {
+            position: absolute; top: 8px; left: 8px;
+            display: flex; gap: 4px; flex-wrap: wrap;
+            z-index: 2;
+        }
+        /* Solid-fill badges (no blur — perf-first filter). */
+        .badge {
+            display: inline-flex; align-items: center; gap: 4px;
+            height: 18px; padding: 0 6px;
+            border-radius: 3px;
+            font-size: 10px; font-weight: 600;
+            letter-spacing: 0.02em;
+            font-family: var(--font-mono);
+        }
+        .badge-template {
+            background: oklch(0.5 0.13 290 / 0.95);
+            color: white;
+            text-transform: uppercase;
+        }
+        .badge-clip {
+            background: oklch(0.55 0.14 var(--accent-h) / 0.95);
+            color: white;
+            text-transform: uppercase;
+        }
+        .badge-asset {
+            background: oklch(0.3 0.01 250 / 0.9);
+            color: var(--fg-0);
+            text-transform: uppercase;
+        }
+        .badge-res {
+            background: oklch(0.16 0.005 250 / 0.85);
+            color: oklch(0.92 0.005 250);
+            text-transform: lowercase;
+        }
+        .card-folder-badge {
+            position: absolute; top: 8px; right: 8px; z-index: 2;
+            display: inline-flex; align-items: center; gap: 4px;
+            height: 18px; padding: 0 6px;
+            background: oklch(0.16 0.005 250 / 0.85);
+            color: var(--fg-1);
+            font-size: 10px;
+            border-radius: 3px;
+            max-width: 60%;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        body[data-folder-filtered="1"] .card-folder-badge { display: none; }
+
+        /* dev32 — trash drawer rows. Compact list, not a grid. */
+        .trash-row {
+            display: flex; align-items: center; gap: 10px;
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--line-1);
+        }
+        .trash-row:last-child { border-bottom: 0; }
+        .trash-row:hover { background: var(--bg-1); }
+        .trash-row-name {
+            flex: 1; min-width: 0;
+            font-size: 12.5px; font-weight: 500; color: var(--fg-0);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .trash-row-meta {
+            font-family: var(--font-mono);
+            font-size: 10.5px;
+            color: var(--fg-3);
+            flex-shrink: 0;
+            white-space: nowrap;
+        }
+        .trash-row-meta[data-expiring="true"] { color: var(--warn); }
+        .trash-row-restore {
+            height: 24px; padding: 0 10px;
+            background: transparent;
+            border: 1px solid var(--accent-line);
+            border-radius: 4px;
+            color: var(--accent-strong);
+            font-size: 11px; font-weight: 500;
+            cursor: pointer;
+            transition: background 100ms, color 100ms;
+        }
+        .trash-row-restore:hover {
+            background: var(--accent-soft); color: var(--fg-0);
+        }
+        .trash-empty-state {
+            padding: 32px 16px;
+            text-align: center;
+            color: var(--fg-3);
+            font-size: 12.5px;
+        }
+
+        .card-body {
+            padding: 10px 11px 11px;
+            display: flex; flex-direction: column; gap: 6px;
+        }
+        .card-title {
+            font-size: 13px; font-weight: 600; color: var(--fg-0);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            min-width: 0;
+        }
+        .card-meta {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 5px;
+            font-size: 11.5px; color: var(--fg-2);
+        }
+        .card-meta-mono { font-family: var(--font-mono); font-size: 11px; color: var(--fg-1); }
+        .card-meta-sep  { color: var(--fg-3); }
+        .card-meta-tech {
+            font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-3);
+            display: flex; gap: 5px; flex-wrap: wrap;
+        }
+        .card-meta-tech [data-zero="true"] { color: var(--warn); }
+
+        .card-tags {
+            display: flex; flex-wrap: wrap; gap: 3px;
+            margin-top: 2px;
+        }
+        .card-tag {
+            display: inline-flex; align-items: center;
+            height: 18px; padding: 0 6px;
+            background: var(--bg-3);
+            border: 1px solid transparent;
+            border-radius: 3px;
+            font-size: 10.5px; color: var(--fg-1);
+            white-space: nowrap;
+        }
+
+        .card-actions {
+            display: flex; align-items: center; gap: 4px;
+            margin-top: 2px;
+            padding-top: 8px;
+            border-top: 1px solid var(--line-1);
+            flex-wrap: wrap;
+        }
+        .card-action {
+            display: inline-flex; align-items: center; gap: 4px;
+            height: 22px; padding: 0 7px;
+            border-radius: 3px;
+            font-size: 11px; font-weight: 500;
+            color: var(--fg-1);
+            border: 1px solid var(--line-1);
+            background: var(--bg-1);
+            transition: background 100ms, color 100ms, border-color 100ms;
+        }
+        .card-action:hover {
+            background: var(--bg-3); color: var(--fg-0); border-color: var(--line-2);
+        }
+        .card-action-primary {
+            background: var(--accent-soft);
+            color: oklch(0.92 0.05 var(--accent-h));
+            border-color: var(--accent-line);
+        }
+        .card-action-primary:hover {
+            background: oklch(0.6 0.13 var(--accent-h) / 0.25); color: white;
+        }
+        .card-action-danger { color: oklch(0.78 0.13 25); }
+        .card-action-danger:hover {
+            background: var(--danger-soft); color: oklch(0.92 0.06 25);
+            border-color: oklch(0.65 0.18 25 / 0.4);
+        }
+        .card-actions-spacer { flex: 1; }
+
+        /* dev20 — AE busy state (kept). pointer-events:none is the click
+           guard; opacity is feedback. */
+        body[data-ae-busy="1"] .card-action,
+        body[data-ae-busy="1"] .card-action-primary {
+            opacity: 0.45; pointer-events: none; cursor: not-allowed;
+        }
+
+        /* While dragging, dim the rest of the grid so the sidebar pops. */
+        body[data-dragging="1"] .grid .card:not([data-dragging="true"]) { opacity: 0.6; }
+
+        /* ---- Status bar --------------------------------------------- */
+        .statusbar {
+            display: flex; align-items: center; gap: 12px;
+            height: 26px; padding: 0 12px;
+            background: var(--bg-1);
+            border-top: 1px solid var(--line-1);
+            font-family: var(--font-mono);
+            font-size: 10.5px;
+            color: var(--fg-3);
+        }
+        .statusbar.ok    { color: var(--ok); }
+        .statusbar.error { color: var(--danger); }
+        .statusbar.busy  { color: var(--accent); }
+        .statusbar-spacer { flex: 1; }
+        .statusbar-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--ok); }
+
+        /* ---- Dialogs ------------------------------------------------- */
+        dialog {
+            background: var(--bg-2); color: var(--fg-0);
+            border: 1px solid var(--line-2);
+            border-radius: var(--radius-3);
+            padding: 18px;
+            min-width: 360px;
+            box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+        }
+        dialog::backdrop { background: rgba(0,0,0,0.55); }
+        dialog h2 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+        dialog label {
+            display: block; margin: 8px 0 4px; font-size: 11px; color: var(--fg-3);
+            font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.06em;
+        }
+        dialog select, dialog input[type=text] {
+            width: 100%; background: var(--bg-0); color: var(--fg-0);
+            border: 1px solid var(--line-1); border-radius: var(--radius-2);
+            padding: 6px 8px; font-size: 12.5px;
+        }
+        dialog select:focus, dialog input[type=text]:focus { border-color: var(--accent-line); }
+        dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+        dialog button {
+            display: inline-flex; align-items: center;
+            height: 28px; padding: 0 12px;
+            border-radius: var(--radius-2);
+            font-size: 12.5px; font-weight: 500;
+            border: 1px solid var(--line-1);
+            background: var(--bg-1); color: var(--fg-1);
+        }
+        dialog button:hover { background: var(--bg-3); color: var(--fg-0); }
+        dialog button.primary {
+            background: var(--accent); color: white;
+            border-color: oklch(0.7 0.14 var(--accent-h) / 0.6);
+        }
+        dialog button.primary:hover { background: var(--accent-strong); }
+        dialog button.danger { color: oklch(0.78 0.13 25); }
+        dialog button.danger:hover { background: var(--danger-soft); }
+    </style>
+</head>
+<body>
+<div class="app-shell">
+    <!-- Top action bar + tag bar ------------------------------------- -->
+    <div class="app-topbar topbar">
+        <div class="actionbar">
+            <div class="breadcrumb">
+                <span class="bc-app">🗄 Vault</span>
+                <span class="bc-sep">›</span>
+                <span class="bc-current" id="bc-current">All</span>
+                <span class="bc-count mono" id="bc-count"></span>
+            </div>
+            <div class="actionbar-spacer"></div>
+            <label class="search-shell">
+                <span style="color:var(--fg-3); font-size:12px;">⌕</span>
+                <input class="search-input" id="search-input" type="text"
+                       placeholder="Search by name…"
+                       aria-label="Search assets by name">
+            </label>
+            <!-- dev34 — Grid/List view toggle. Two-button pill modeled
+                 on the design preview: small icon buttons sharing one
+                 shell, active state painted via [data-active="true"].
+                 Persists to localStorage so a user who prefers list
+                 stays on list across sessions. -->
+            <div class="view-toggle" id="view-toggle" role="tablist" aria-label="View mode">
+                <button data-view="grid" data-active="true" role="tab" aria-label="Grid view" title="Grid view">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                </button>
+                <button data-view="list" role="tab" aria-label="List view" title="List view">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+                </button>
+            </div>
+            <button class="btn btn-ghost" id="btn-refresh" title="Re-read the vault index">⟳ Refresh</button>
+            <button class="btn btn-ghost" id="btn-rebuild" title="Re-scan assets/ on disk and rewrite index.json">Rebuild</button>
+            <button class="btn btn-ghost" id="btn-pick"    title="Pick a different vault folder">Pick folder…</button>
+            <!-- dev33 — Add asset. Pops a native .aep picker; the
+                 picked file is vault-collected as an external asset
+                 (origin '(External)'). Pinned at the right edge of
+                 the toolbar so it reads as the primary "import
+                 something" affordance — matching the design's slot. -->
+            <button class="btn btn-primary" id="btn-add-asset" title="Pick an .aep file from disk and vault it as a new asset">+ Add asset</button>
+        </div>
+        <div class="tagbar" id="tagbar">
+            <span class="tagbar-label">Tags</span>
+            <div class="tagbar-scroll" id="tagbar-scroll"></div>
+        </div>
+    </div>
+
+    <!-- Sidebar ------------------------------------------------------- -->
+    <aside class="app-sidebar sidebar" id="sidebar">
+        <div class="sidebar-inner">
+            <!-- dev27 — the badge IS the collapse/expand trigger. Killed
+                 the dev26 floating "«/»" button: it sat in the header's
+                 right gutter and looked disconnected once the meta block
+                 collapsed away. Now the only clickable affordance in the
+                 header is the badge itself, which feels more direct and
+                 stays anchored regardless of state. -->
+            <div class="sb-header">
+                <button class="sb-vault-badge" id="btn-sb-collapse"
+                        title="Collapse / expand sidebar"
+                        aria-label="Collapse / expand sidebar">🗄</button>
+                <div class="sb-vault-meta">
+                    <div class="sb-vault-title">Vault</div>
+                    <div class="sb-vault-path mono" id="vault-path">(no vault configured)</div>
+                </div>
+            </div>
+
+            <label class="sb-filter">
+                <span style="color:var(--fg-3); font-size:11px;">⌕</span>
+                <input class="sb-filter-input" id="sb-filter-input" type="text"
+                       placeholder="Filter folders…">
+            </label>
+
+            <div class="sb-scroll">
+                <div class="sb-section" id="sb-pinned"></div>
+                <div class="sb-section" id="sb-folders"></div>
+            </div>
+
+            <div class="sb-footer">
+                <div class="sb-stat"><span class="sb-stat-label">Assets</span><span class="sb-stat-value" id="sb-stat-assets">0</span></div>
+                <div class="sb-stat"><span class="sb-stat-label">Folders</span><span class="sb-stat-value" id="sb-stat-folders">0</span></div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Main canvas --------------------------------------------------- -->
+    <main class="app-main canvas">
+        <div class="canvas-scroll" id="canvas-scroll"></div>
+    </main>
+
+    <!-- Status bar ---------------------------------------------------- -->
+    <div class="app-statusbar statusbar" id="statusbar">
+        <span class="statusbar-dot"></span>
+        <span id="statusbar-text">Loading…</span>
+        <span class="statusbar-spacer"></span>
+        <span id="statusbar-count" class="mono"></span>
+    </div>
+</div>
+
+<!-- Dialogs (ported from dev25 — Electron disables window.prompt/confirm,
+     so create / rename / delete all flow through these). -->
+<dialog id="folder-name-dialog">
+    <h2 id="folder-name-title">New folder</h2>
+    <label for="folder-name-input">Folder name</label>
+    <input type="text" id="folder-name-input" maxlength="80" autocomplete="off">
+    <p id="folder-name-error" style="margin:6px 0 0; color:var(--danger); font-size:11px; min-height:14px;"></p>
+    <div class="row">
+        <button id="folder-name-cancel">Cancel</button>
+        <button id="folder-name-go" class="primary">OK</button>
+    </div>
+</dialog>
+
+<dialog id="folder-confirm-dialog">
+    <h2>Delete folder?</h2>
+    <p id="folder-confirm-msg" style="margin:0 0 4px; color:var(--fg-2); font-size:12px;"></p>
+    <div class="row">
+        <button id="folder-confirm-cancel">Cancel</button>
+        <button id="folder-confirm-go" class="danger">Delete</button>
+    </div>
+</dialog>
+
+<dialog id="import-dialog">
+    <h2 id="import-title">Import asset</h2>
+    <label for="import-target">Target project</label>
+    <select id="import-target"></select>
+    <label for="import-name">New shot name</label>
+    <input type="text" id="import-name" placeholder="leave blank for auto-generated">
+    <div class="row">
+        <button id="import-cancel">Cancel</button>
+        <button id="import-go" class="primary">Import</button>
+    </div>
+</dialog>
+
+<!-- dev32 — Trash drawer. Wider than the other dialogs because it's
+     a list view, not a single form. Footer holds "Empty trash"
+     (destructive, gated by a confirm step) and Close. -->
+<dialog id="trash-dialog" style="min-width:520px; max-width:680px;">
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+        <h2 style="margin:0;">Trash</h2>
+        <span id="trash-count" class="mono" style="color:var(--fg-3); font-size:11px;"></span>
+        <span style="flex:1;"></span>
+        <span id="trash-retention" class="mono" style="color:var(--fg-3); font-size:10.5px;">7-day retention</span>
+    </div>
+    <div id="trash-list" style="max-height:50vh; overflow-y:auto; border:1px solid var(--line-1); border-radius:6px;"></div>
+    <div class="row" style="margin-top:14px;">
+        <button id="trash-empty" class="danger" title="Permanently delete every entry in trash. Cannot be undone.">Empty trash now</button>
+        <span style="flex:1;"></span>
+        <button id="trash-close" class="primary">Close</button>
+    </div>
+</dialog>
+
+<!-- dev32 — Empty-trash confirm. Separate from the drawer so users
+     can't fat-finger a destructive action while browsing. -->
+<dialog id="trash-confirm-dialog">
+    <h2>Empty trash?</h2>
+    <p id="trash-confirm-msg" style="margin:0 0 4px; color:var(--fg-2); font-size:12px;">
+        This permanently deletes every entry currently in trash, regardless of age.
+        Restored assets are unaffected. This cannot be undone.
+    </p>
+    <div class="row">
+        <button id="trash-confirm-cancel">Cancel</button>
+        <button id="trash-confirm-go" class="danger">Delete forever</button>
+    </div>
+</dialog>
+
+<script>
+    'use strict';
+    const $ = id => document.getElementById(id);
+    const escapeHTML = s => String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+    // dev26 — stable hue per tag string for tag-chip color theming.
+    // Hash → integer → mod 360 → CSS var. Same string always gets the
+    // same color, no global state needed.
+    function hueForTag(t) {
+        const s = String(t || '');
+        let h = 0;
+        for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+        return h % 360;
+    }
+
+    function setStatus(text, kind) {
+        const sb = $('statusbar');
+        sb.className = 'app-statusbar statusbar' + (kind ? ' ' + kind : '');
+        $('statusbar-text').textContent = text || '';
+    }
+    function fmtSpec(s) {
+        if (!s) return '';
+        return `${s.width}×${s.height} · ${Number(s.fps).toFixed(2)}fps`;
+    }
+    // dev34 — list view formatters. Kept tiny + colocated with fmtSpec
+    // so all "field → display" logic lives in one place.
+    function fmtRes(s) {
+        if (!s || !s.width || !s.height) return '—';
+        return `${s.width}×${s.height}`;
+    }
+    function fmtDuration(s) {
+        if (!s || !s.durationFrames || !s.fps) return '—';
+        const sec = s.durationFrames / s.fps;
+        if (sec < 60) return sec.toFixed(2) + 's';
+        const m = Math.floor(sec / 60), r = sec - m * 60;
+        return `${m}m ${r.toFixed(0)}s`;
+    }
+    // dev37 — bytes → human readable. KB/MB/GB at decimal 1024 boundaries.
+    // Returns "—" for null/zero so the cell stays visually quiet for
+    // legacy rows that haven't been re-indexed yet (sizeBytes is null
+    // until the index is rebuilt with dev37+ vault.js).
+    function fmtBytes(n) {
+        if (n == null) return '—';
+        const v = Number(n) || 0;
+        if (v <= 0) return '—';
+        if (v < 1024) return v + ' B';
+        const KB = 1024, MB = KB * 1024, GB = MB * 1024;
+        if (v < MB) return (v / KB).toFixed(1) + ' KB';
+        if (v < GB) return (v / MB).toFixed(1) + ' MB';
+        return (v / GB).toFixed(2) + ' GB';
+    }
+    function timeAgo(iso) {
+        if (!iso) return '—';
+        const t = Date.parse(iso);
+        if (isNaN(t)) return '—';
+        const sec = Math.max(1, Math.round((Date.now() - t) / 1000));
+        if (sec < 60) return sec + 's ago';
+        const m = Math.round(sec / 60);
+        if (m < 60) return m + 'm ago';
+        const h = Math.round(m / 60);
+        if (h < 24) return h + 'h ago';
+        const d = Math.round(h / 24);
+        if (d < 30) return d + 'd ago';
+        const mo = Math.round(d / 30);
+        if (mo < 12) return mo + 'mo ago';
+        const y = Math.round(mo / 12);
+        return y + 'y ago';
+    }
+
+    // dev31 — sidebar icon table. Inline SVG paths only (no <img>, no
+    // icon font, no fetch) keep the cold-start cost at zero. All icons
+    // share a 24×24 viewBox and rely on `currentColor` so the existing
+    // .sb-icon hover/active color rules just work.
+    //
+    // - inbox  : "All Assets" — Lucide-style inbox shape
+    // - file   : "Unfiled"    — single document outline
+    // - clock  : "Recently"   — circle + hands (queued for future view)
+    // - folder : user folders — closed folder outline
+    const _SB_ICONS = {
+        inbox: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>',
+        file:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>',
+        clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
+        folder:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
+        // dev32 — Trash bin (Lucide "trash-2"). The sidebar entry it
+        // sits in opens a separate drawer rather than filtering the
+        // main grid; trashed assets aren't browsable as cards.
+        trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>',
+    };
+
+    // dev32 — trash count cache. Updated on every refresh() so the
+    // sidebar entry shows a live number. Re-fetching trash on every
+    // filter change is wasteful (it's a synchronous fs walk on the
+    // main process), so we just bump the cache when an action mutates
+    // the trash dir.
+    let _trashCount = 0;
+
+    // ---- Filter / view state -------------------------------------------
+    // Cached client-side; renderGrid() reads from these. Filter changes
+    // never touch IPC — pure DOM work.
+    let _allAssets = [];
+    let _folders = [];
+    let _currentFolderId = 'all';   // 'all' | 'unfiled' | <folderId>
+    let _searchTerm = '';
+    let _activeTag = null;          // null or a tag string
+    let _sbFilter = '';             // sidebar folder-filter substring
+    // dev34 — view mode. Persisted to localStorage so a user who picks
+    // 'list' stays on list across reloads. The toggle pill in the
+    // toolbar mirrors this and re-renders the canvas on click.
+    let _viewMode = (function () {
+        try { return localStorage.getItem('vault.viewMode') === 'list' ? 'list' : 'grid'; }
+        catch (_) { return 'grid'; }
+    })();
+    // dev36 — list-view sort. Persisted alongside _viewMode so a user
+    // who picks "Added desc" stays there across reloads. `key` is one of
+    // the column ids ('name' | 'res' | 'dur' | 'used' | 'added' | null);
+    // null means "no sort, use index order". `dir` is 'asc' | 'desc'.
+    let _listSort = (function () {
+        try {
+            const raw = localStorage.getItem('vault.listSort');
+            if (!raw) return { key: 'added', dir: 'desc' };
+            const o = JSON.parse(raw);
+            const VALID_KEYS = { name:1, res:1, dur:1, size:1, used:1, added:1 };
+            if (!o || !VALID_KEYS[o.key]) return { key: 'added', dir: 'desc' };
+            return { key: o.key, dir: o.dir === 'asc' ? 'asc' : 'desc' };
+        } catch (_) { return { key: 'added', dir: 'desc' }; }
+    })();
+    // Sort comparators keyed by column. Each returns -1/0/1 in ASC
+    // direction; the caller flips for DESC. Missing values sort LAST in
+    // ascending order regardless of direction (nulls cluster at the
+    // bottom, where they don't pollute the visible top of the list).
+    const _LIST_SORTERS = {
+        name:  (a, b) => String(a.name || '').localeCompare(String(b.name || '')),
+        res:   (a, b) => {
+            const av = (a.specAtVault && a.specAtVault.width) || 0;
+            const bv = (b.specAtVault && b.specAtVault.width) || 0;
+            return av - bv;
+        },
+        dur:   (a, b) => {
+            const av = (a.specAtVault && a.specAtVault.durationFrames) || 0;
+            const bv = (b.specAtVault && b.specAtVault.durationFrames) || 0;
+            return av - bv;
+        },
+        size:  (a, b) => (a.sizeBytes  || 0) - (b.sizeBytes  || 0),
+        used:  (a, b) => (a.usageCount || 0) - (b.usageCount || 0),
+        added: (a, b) => {
+            const av = a.vaultedAt ? Date.parse(a.vaultedAt) : 0;
+            const bv = b.vaultedAt ? Date.parse(b.vaultedAt) : 0;
+            return av - bv;
+        },
+    };
+    function applyListSort(rows) {
+        const { key, dir } = _listSort;
+        if (!key || !_LIST_SORTERS[key]) return rows;
+        const cmp = _LIST_SORTERS[key];
+        const mult = dir === 'desc' ? -1 : 1;
+        // Stable sort on a shallow copy so the source array stays put.
+        return rows.slice().sort((a, b) => mult * cmp(a, b));
+    }
+
+    // ---- Card -----------------------------------------------------------
+    function renderCard(a) {
+        const isClip       = (a.type === 'clip');
+        const isCompTpl    = a.templateKind === 'comp';
+        const isLayerTpl   = a.templateKind === 'layer';
+        const isProcTpl    = isCompTpl || isLayerTpl;
+
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.dataset.assetId = a.assetId;
+        card.dataset.type    = a.type || 'asset';
+
+        // dev25 drag-and-drop — assetId rides on dataTransfer; pill/sidebar
+        // entries with [data-drag-target] read it on drop. dev20 lock
+        // surface lives separately on .card-action via [data-ae-busy].
+        card.draggable = true;
+        card.addEventListener('dragstart', (e) => {
+            card.dataset.dragging = 'true';
+            document.body.dataset.dragging = '1';
+            // Arm every valid drop target so the user can SEE where they
+            // can land before they hover. Cleared on dragend.
+            document.querySelectorAll('[data-droppable="1"]')
+                .forEach(el => el.dataset.dragTarget = 'true');
+            try {
+                e.dataTransfer.setData('text/plain', a.assetId);
+                e.dataTransfer.setData('application/x-chiral-asset-id', a.assetId);
+                e.dataTransfer.effectAllowed = 'move';
+            } catch (_) {}
+        });
+        card.addEventListener('dragend', () => {
+            card.dataset.dragging = 'false';
+            document.body.dataset.dragging = '0';
+            document.querySelectorAll('[data-drag-target="true"]')
+                .forEach(el => { delete el.dataset.dragTarget; delete el.dataset.dragOver; });
+        });
+
+        // Thumb + badges + folder marker.
+        const thumb = document.createElement('div');
+        thumb.className = 'card-thumb-wrap';
+
+        const badges = document.createElement('div');
+        badges.className = 'card-badges';
+        const mkBadge = (cls, text) => {
+            const b = document.createElement('span');
+            b.className = 'badge ' + cls;
+            b.textContent = text;
+            return b;
+        };
+        if (isCompTpl)       badges.appendChild(mkBadge('badge-template', 'Comp · Template'));
+        else if (isLayerTpl) badges.appendChild(mkBadge('badge-template', 'Layer · Template'));
+        else if (isClip)     badges.appendChild(mkBadge('badge-clip',     'Clip'));
+        else                 badges.appendChild(mkBadge('badge-asset',    'Asset'));
+        if (a.specAtVault && a.specAtVault.height) {
+            badges.appendChild(mkBadge('badge-res', a.specAtVault.height + 'p'));
+        }
+        thumb.appendChild(badges);
+
+        if (a.folderId) {
+            const folder = _folders.find(f => f.id === a.folderId);
+            if (folder) {
+                const fb = document.createElement('div');
+                fb.className = 'card-folder-badge';
+                fb.textContent = '📁 ' + folder.name;
+                thumb.appendChild(fb);
+            }
+        }
+
+        // Default placeholder; image swapped in async via mediaPaths().
+        if (isClip) {
+            const icon = document.createElement('span');
+            icon.className = 'card-thumb-icon';
+            icon.textContent = '📎';
+            thumb.appendChild(icon);
+        } else if (!a.thumbnailRel) {
+            const ph = document.createElement('span');
+            ph.style.cssText = 'color:var(--fg-3); font-size:11px;';
+            ph.textContent = 'no preview';
+            thumb.appendChild(ph);
+        }
+        card.appendChild(thumb);
+
+        // Body — title, meta, tags, actions.
+        const body = document.createElement('div');
+        body.className = 'card-body';
+
+        const title = document.createElement('div');
+        title.className = 'card-title';
+        title.textContent = a.name || '(unnamed)';
+        title.title = a.name || '';
+        body.appendChild(title);
+
+        const meta = document.createElement('div');
+        meta.className = 'card-meta';
+        meta.innerHTML = `
+            <span>${escapeHTML(a.originProject || '?')}</span>
+            <span class="card-meta-sep">·</span>
+            <span class="card-meta-mono">${escapeHTML(a.originShot || '')}</span>
+        `;
+        body.appendChild(meta);
+
+        const tech = document.createElement('div');
+        tech.className = 'card-meta-tech';
+        const techParts = [];
+        if (a.specAtVault && a.specAtVault.width) techParts.push(fmtSpec(a.specAtVault));
+        if (isClip && typeof a.clipCount === 'number') {
+            techParts.push(`${a.clipCount} file${a.clipCount === 1 ? '' : 's'}`);
+        }
+        techParts.push(`<span data-zero="${(a.usageCount || 0) === 0 ? 'true' : 'false'}">used ${a.usageCount || 0}×</span>`);
+        tech.innerHTML = techParts.join(' <span class="card-meta-sep">·</span> ');
+        body.appendChild(tech);
+
+        if (Array.isArray(a.tags) && a.tags.length) {
+            const tagWrap = document.createElement('div');
+            tagWrap.className = 'card-tags';
+            for (const t of a.tags.slice(0, 6)) {
+                const ch = document.createElement('span');
+                ch.className = 'card-tag';
+                ch.textContent = t;
+                tagWrap.appendChild(ch);
+            }
+            body.appendChild(tagWrap);
+        }
+
+        // Action row — same affordances as dev25, restyled.
+        const actions = document.createElement('div');
+        actions.className = 'card-actions';
+        const mkAction = (act, label, cls, title) => {
+            const b = document.createElement('button');
+            b.className = 'card-action' + (cls ? ' ' + cls : '');
+            b.dataset.act = act;
+            b.textContent = label;
+            if (title) b.title = title;
+            return b;
+        };
+        if (!isClip) actions.appendChild(mkAction('toResolve', '→ Resolve', null, 'Import the master into a new shot in another project'));
+        actions.appendChild(mkAction('toAE', '→ AE', 'card-action-primary',
+            isClip
+                ? 'Drop these files into the open AE project'
+                : 'Drop this asset into the open AE project as a folder of comps'));
+        if (!isClip) actions.appendChild(mkAction('toAEAsShot', 'as shot…', null, 'Legacy: copy into a new shot folder under another project'));
+        const spacer = document.createElement('span');
+        spacer.className = 'card-actions-spacer';
+        actions.appendChild(spacer);
+        actions.appendChild(mkAction('reveal', 'Reveal', null, 'Open the asset folder in Explorer'));
+        actions.appendChild(mkAction('delete', 'Delete', 'card-action-danger', 'Move to Vault trash (7-day retention)'));
+        body.appendChild(actions);
+
+        card.appendChild(body);
+
+        actions.addEventListener('click', async (e) => {
+            const btn = e.target.closest('button.card-action'); if (!btn) return;
+            const act = btn.dataset.act;
+            if (act === 'reveal')        await window.vault.reveal(a.assetId);
+            else if (act === 'delete') {
+                if (!confirm(`Move "${a.name}" to Vault trash? (7-day retention)`)) return;
+                const r = await window.vault.delete(a.assetId);
+                if (r.ok) { await refresh(); setStatus('Deleted (recoverable for 7 days)', 'ok'); }
+                else      setStatus('Delete failed: ' + r.error, 'error');
+            }
+            else if (act === 'toResolve')   await openImportDialog(a, 'resolve');
+            else if (act === 'toAE')        { isClip ? await sendClipToAE(a) : await sendAssetToOpenAE(a); }
+            else if (act === 'toAEAsShot')  await openImportDialog(a, 'ae');
+        });
+
+        // Async media — img for thumbnails, hover-play video for proxies.
+        if (!isClip) {
+            window.vault.mediaPaths(a.assetId).then(r => {
+                if (!r || !r.ok) return;
+                const fileUrl = p => 'file:///' + p.replace(/\\/g, '/');
+                if (r.thumbnail) {
+                    // Clear placeholder, keep badges (they're absolute-positioned).
+                    const placeholders = thumb.querySelectorAll('.card-thumb-icon, span:not(.badge):not(.card-folder-badge)');
+                    placeholders.forEach(el => el.remove());
+                    const img = document.createElement('img');
+                    img.src = fileUrl(r.thumbnail);
+                    img.alt = '';
+                    thumb.appendChild(img);
+                }
+                if (r.proxy) {
+                    let videoEl = null;
+                    const ensureVideo = () => {
+                        if (videoEl) return videoEl;
+                        videoEl = document.createElement('video');
+                        videoEl.src = fileUrl(r.proxy);
+                        videoEl.muted = true; videoEl.loop = true;
+                        videoEl.playsInline = true; videoEl.preload = 'metadata';
+                        videoEl.hidden = true;
+                        thumb.appendChild(videoEl);
+                        return videoEl;
+                    };
+                    thumb.addEventListener('mouseenter', () => {
+                        const v = ensureVideo(); v.hidden = false;
+                        try { v.currentTime = 0; } catch (_) {}
+                        const p = v.play();
+                        if (p && p.catch) p.catch(() => {});
+                    });
+                    thumb.addEventListener('mouseleave', () => {
+                        if (!videoEl) return;
+                        try { videoEl.pause(); } catch (_) {}
+                        videoEl.hidden = true;
+                    });
+                }
+            });
+        }
+        return card;
+    }
+
+    // ---- Import flows (clip → open AE, asset → open AE, "as shot…") ----
+    async function sendClipToAE(asset) {
+        setStatus(`Sending ${asset.clipCount || 0} clip(s) to AE…`, 'busy');
+        const r = await window.vault.importClipToAE({ assetId: asset.assetId, intoOpen: true });
+        if (!r || !r.ok) { setStatus('Clip → AE failed: ' + (r && r.error ? r.error : 'unknown'), 'error'); return; }
+        setStatus(`Imported ${r.imported || asset.clipCount} clip(s) into AE`, 'ok');
+        await refresh();
+    }
+    async function sendAssetToOpenAE(asset) {
+        setStatus(`Sending "${asset.name}" to AE…`, 'busy');
+        const r = await window.vault.importAssetToOpenAE({ assetId: asset.assetId });
+        if (!r || !r.ok) { setStatus('Asset → AE failed: ' + (r && r.error ? r.error : 'unknown'), 'error'); return; }
+        const folder = r.folderName ? ` as "${r.folderName}"` : '';
+        setStatus(`Imported "${asset.name}" into open AE${folder}`, 'ok');
+        await refresh();
+    }
+
+    let _currentImport = null;
+    async function openImportDialog(asset, target) {
+        _currentImport = { asset, target };
+        $('import-title').textContent =
+            (target === 'resolve' ? 'Import to Resolve' : 'Import to After Effects') + ' — ' + asset.name;
+        const list = await window.api.listProjects();
+        const projects = (list && list.projects) || [];
+        const sel = $('import-target');
+        sel.innerHTML = '';
+        for (const p of projects) {
+            const opt = document.createElement('option');
+            opt.value = p; opt.textContent = p;
+            sel.appendChild(opt);
+        }
+        if (list && list.current) sel.value = list.current;
+        if (projects.length === 0) {
+            const opt = document.createElement('option');
+            opt.value = ''; opt.textContent = '(no projects — create one in the main window first)';
+            opt.disabled = true; sel.appendChild(opt);
+        }
+        $('import-name').value = '';
+        $('import-dialog').showModal();
+    }
+    $('import-cancel').onclick = () => $('import-dialog').close();
+    $('import-go').onclick = async () => {
+        const ctx = _currentImport; if (!ctx) return;
+        const target = $('import-target').value;
+        const newShotName = $('import-name').value.trim() || null;
+        if (!target) { setStatus('Pick a target project first.', 'error'); return; }
+        const args = { assetId: ctx.asset.assetId, targetProject: target, newShotName };
+        $('import-dialog').close();
+        setStatus('Importing…', 'busy');
+        const r = (ctx.target === 'resolve')
+            ? await window.vault.importToResolve(args)
+            : await window.vault.importToAE(args);
+        if (r.ok) { setStatus(`Imported to ${target}: ${r.shotName}`, 'ok'); await refresh(); }
+        else      setStatus('Import failed: ' + r.error, 'error');
+    };
+
+    // ---- Sidebar (vertical folder tree, drop targets) ------------------
+    function renderSidebar() {
+        // Pinned views: All, Unfiled.
+        const pinnedRoot = $('sb-pinned');
+        pinnedRoot.innerHTML = '';
+        const labelP = document.createElement('div');
+        labelP.className = 'sb-section-label';
+        labelP.textContent = 'Views';
+        pinnedRoot.appendChild(labelP);
+        const allCount     = _allAssets.length;
+        const unfiledCount = _allAssets.filter(a => !a.folderId).length;
+        pinnedRoot.appendChild(makeSidebarItem({ id: 'all',     icon: 'inbox', name: 'All',     count: allCount }));
+        pinnedRoot.appendChild(makeSidebarItem({ id: 'unfiled', icon: 'file',  name: 'Unfiled', count: unfiledCount, droppable: true }));
+        // dev32 — Trash entry. Click opens the trash drawer instead of
+        // filtering the main grid (deleted assets aren't browsable
+        // cards). The kind 'trash' is intercepted in the click handler
+        // inside makeSidebarItem.
+        pinnedRoot.appendChild(makeSidebarItem({ id: 'trash',   icon: 'trash', name: 'Trash',   count: _trashCount, action: 'open-trash' }));
+
+        // User folders. Sidebar filter narrows the visible list.
+        const root = $('sb-folders');
+        root.innerHTML = '';
+        const labelF = document.createElement('div');
+        labelF.className = 'sb-section-label';
+        labelF.innerHTML = `<span>Folders</span>`;
+        const addBtn = document.createElement('button');
+        addBtn.className = 'sb-section-action';
+        addBtn.title = 'Create a new folder';
+        addBtn.textContent = '+';
+        addBtn.onclick = () => openFolderNameDialog({ mode: 'create' });
+        labelF.appendChild(addBtn);
+        root.appendChild(labelF);
+
+        const filt = (_sbFilter || '').toLowerCase().trim();
+        const matchedFolders = _folders.filter(f =>
+            !filt || (f.name || '').toLowerCase().indexOf(filt) >= 0);
+
+        if (matchedFolders.length === 0) {
+            const empty = document.createElement('div');
+            empty.style.cssText = 'padding:8px 12px; color:var(--fg-3); font-size:11.5px;';
+            empty.textContent = filt ? 'No folders match.' : 'No folders yet — click + to create.';
+            root.appendChild(empty);
+            return;
+        }
+
+        for (const f of matchedFolders) {
+            const count = _allAssets.filter(a => a.folderId === f.id).length;
+            const item = makeSidebarItem({
+                id: f.id,
+                icon: 'folder',
+                name: f.name,
+                count,
+                droppable: true,
+                contextMenu: { id: f.id, name: f.name },
+            });
+            root.appendChild(item);
+        }
+    }
+
+    // Build one sidebar entry. `droppable` adds dragover/drop wiring;
+    // `contextMenu` adds rename/delete on right-click.
+    //
+    // dev31 — `opts.icon` may be either a Unicode glyph (legacy) or a
+    // key into _SB_ICONS. SVG path strings are inlined so there's no
+    // network fetch and no icon-font bundle weight; the .sb-icon
+    // container scales them to 14×14 via the stylesheet.
+    function makeSidebarItem(opts) {
+        const it = document.createElement('button');
+        it.className = 'sb-item';
+        it.dataset.kind = opts.id;
+        if (opts.id === _currentFolderId) it.dataset.active = 'true';
+        if (opts.droppable) it.dataset.droppable = '1';
+
+        const icon = document.createElement('span');
+        icon.className = 'sb-icon';
+        const svg = _SB_ICONS[opts.icon];
+        if (svg) icon.innerHTML = svg;
+        else icon.textContent = opts.icon || '▢';
+        it.appendChild(icon);
+
+        const name = document.createElement('span');
+        name.className = 'sb-name';
+        name.textContent = opts.name;
+        it.appendChild(name);
+
+        const count = document.createElement('span');
+        count.className = 'sb-count';
+        count.textContent = String(opts.count || 0);
+        it.appendChild(count);
+
+        it.addEventListener('click', () => {
+            // dev32 — Trash entry intercepts: opens the drawer rather
+            // than touching the filter state. Doing it here (not in
+            // renderSidebar) so the sidebar's data flow stays simple
+            // — `_currentFolderId` only ever holds grid-filter values.
+            if (opts.action === 'open-trash') { openTrashDrawer(); return; }
+            _currentFolderId = opts.id;
+            _activeTag = null;       // entering a new view clears the tag chip
+            renderSidebar();
+            renderTagBar();
+            renderGrid();
+        });
+
+        if (opts.contextMenu) {
+            it.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                openPillContextMenu(e, opts.contextMenu);
+            });
+        }
+
+        if (opts.droppable) {
+            it.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                it.dataset.dragOver = 'true';
+            });
+            it.addEventListener('dragleave', () => { delete it.dataset.dragOver; });
+            it.addEventListener('drop', async (e) => {
+                e.preventDefault();
+                delete it.dataset.dragOver;
+                const assetId =
+                    e.dataTransfer.getData('application/x-chiral-asset-id') ||
+                    e.dataTransfer.getData('text/plain') || '';
+                if (!assetId) return;
+                const target = (opts.id === 'unfiled') ? null : opts.id;
+                await assignAssetToFolder(assetId, target);
+            });
+        }
+        return it;
+    }
+
+    async function assignAssetToFolder(assetId, folderId) {
+        const r = await window.vault.folders.assign(assetId, folderId);
+        if (!r.ok) { setStatus('Move failed: ' + r.error, 'error'); return; }
+        await refresh();
+        const folderName = folderId
+            ? ((_folders.find(f => f.id === folderId) || {}).name || 'folder')
+            : 'Unfiled';
+        setStatus(`Moved to ${folderName}`, 'ok');
+    }
+
+    // ---- Folder name dialog (create / rename) ---------------------------
+    let _folderNameCtx = null;
+    function openFolderNameDialog(ctx) {
+        _folderNameCtx = ctx;
+        $('folder-name-title').textContent = ctx.mode === 'rename' ? 'Rename folder' : 'New folder';
+        $('folder-name-input').value = ctx.originalName || '';
+        $('folder-name-error').textContent = '';
+        $('folder-name-go').textContent = ctx.mode === 'rename' ? 'Rename' : 'Create';
+        $('folder-name-dialog').showModal();
+        setTimeout(() => { $('folder-name-input').focus(); $('folder-name-input').select(); }, 0);
+    }
+    $('folder-name-cancel').onclick = () => $('folder-name-dialog').close();
+    $('folder-name-input').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); $('folder-name-go').click(); }
+    });
+    $('folder-name-go').onclick = async () => {
+        if (!_folderNameCtx) { $('folder-name-dialog').close(); return; }
+        const name = ($('folder-name-input').value || '').trim();
+        if (!name) { $('folder-name-error').textContent = 'Name cannot be empty.'; return; }
+        const ctx = _folderNameCtx;
+        const r = ctx.mode === 'rename'
+            ? await window.vault.folders.rename(ctx.id, name)
+            : await window.vault.folders.create(name);
+        if (!r.ok) { $('folder-name-error').textContent = r.error || 'Operation failed.'; return; }
+        $('folder-name-dialog').close();
+        if (ctx.mode === 'create' && r.id) _currentFolderId = r.id;
+        _folderNameCtx = null;
+        await refresh();
+    };
+
+    // ---- Pill context menu (rename / delete) ----------------------------
+    function openPillContextMenu(e, folder) {
+        const existing = document.getElementById('pill-context-menu');
+        if (existing) existing.remove();
+        const menu = document.createElement('div');
+        menu.id = 'pill-context-menu';
+        menu.style.cssText = `
+            position:fixed; left:${e.clientX}px; top:${e.clientY}px; z-index:100;
+            background:var(--bg-2); border:1px solid var(--line-2);
+            border-radius:6px; box-shadow:0 4px 16px rgba(0,0,0,0.5);
+            padding:4px 0; min-width:140px;`;
+        const mkItem = (label, onClick, danger) => {
+            const it = document.createElement('div');
+            it.style.cssText = 'padding:6px 14px; cursor:pointer; font-size:12px;'
+                + (danger ? 'color:var(--danger);' : '');
+            it.textContent = label;
+            it.addEventListener('mouseenter', () => it.style.background = 'var(--bg-3)');
+            it.addEventListener('mouseleave', () => it.style.background = '');
+            it.addEventListener('click', () => { menu.remove(); onClick(); });
+            menu.appendChild(it);
+        };
+        mkItem('Rename…', () => openFolderNameDialog({ mode: 'rename', id: folder.id, originalName: folder.name }));
+        mkItem('Delete…', () => openDeleteConfirm(folder), true);
+        document.body.appendChild(menu);
+        const closer = (ev) => {
+            if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('click', closer); }
+        };
+        setTimeout(() => document.addEventListener('click', closer), 0);
+    }
+    let _pillContextCtx = null;
+    function openDeleteConfirm(folder) {
+        _pillContextCtx = folder;
+        $('folder-confirm-msg').textContent =
+            `"${folder.name}" will be removed. Assets currently in it become Unfiled (nothing is deleted from disk).`;
+        $('folder-confirm-dialog').showModal();
+    }
+    $('folder-confirm-cancel').onclick = () => $('folder-confirm-dialog').close();
+    $('folder-confirm-go').onclick = async () => {
+        if (!_pillContextCtx) { $('folder-confirm-dialog').close(); return; }
+        const folder = _pillContextCtx;
+        $('folder-confirm-dialog').close();
+        _pillContextCtx = null;
+        const r = await window.vault.folders.remove(folder.id);
+        if (!r.ok) { setStatus('Delete folder failed: ' + r.error, 'error'); return; }
+        if (_currentFolderId === folder.id) _currentFolderId = 'all';
+        await refresh();
+        setStatus(`Folder "${folder.name}" deleted`, 'ok');
+    };
+
+    // ---- Tag bar (only tags present in the current view) ----------------
+    function renderTagBar() {
+        const root = $('tagbar-scroll');
+        root.innerHTML = '';
+        // Compute which assets are in scope WITHOUT applying the tag filter,
+        // so the tag chips reflect the current folder + search context.
+        const scoped = _allAssets.filter(a => folderMatch(a) && searchMatch(a));
+        const counts = new Map();
+        for (const a of scoped) {
+            for (const t of (a.tags || [])) {
+                counts.set(t, (counts.get(t) || 0) + 1);
+            }
+        }
+        if (counts.size === 0) {
+            const e = document.createElement('span');
+            e.className = 'tagbar-empty';
+            e.textContent = 'No tags in this view yet.';
+            root.appendChild(e);
+            return;
+        }
+        // Sort: most common first, then alphabetical.
+        const sorted = Array.from(counts.entries())
+            .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+
+        if (_activeTag) {
+            const clear = document.createElement('button');
+            clear.className = 'tag-chip tag-chip-clear';
+            clear.innerHTML = `<span>Clear filter</span>`;
+            clear.onclick = () => { _activeTag = null; renderTagBar(); renderGrid(); };
+            root.appendChild(clear);
+        }
+        for (const [tag, count] of sorted) {
+            const chip = document.createElement('button');
+            chip.className = 'tag-chip';
+            chip.style.setProperty('--tag-hue', String(hueForTag(tag)));
+            if (_activeTag === tag) chip.dataset.active = 'true';
+            chip.innerHTML = `
+                <span class="tag-chip-dot"></span>
+                <span>${escapeHTML(tag)}</span>
+                <span class="tag-chip-count">${count}</span>`;
+            chip.onclick = () => {
+                _activeTag = (_activeTag === tag) ? null : tag;
+                renderTagBar();
+                renderGrid();
+            };
+            root.appendChild(chip);
+        }
+    }
+
+    // ---- Filtering primitives ------------------------------------------
+    function folderMatch(a) {
+        if (_currentFolderId === 'all')      return true;
+        if (_currentFolderId === 'unfiled')  return !a.folderId;
+        return a.folderId === _currentFolderId;
+    }
+    function searchMatch(a) {
+        const s = (_searchTerm || '').toLowerCase().trim();
+        if (!s) return true;
+        if ((a.name || '').toLowerCase().indexOf(s) >= 0) return true;
+        if (Array.isArray(a.tags)) {
+            for (const t of a.tags) {
+                if ((t || '').toLowerCase().indexOf(s) >= 0) return true;
+            }
+        }
+        return false;
+    }
+    function tagMatch(a) {
+        if (!_activeTag) return true;
+        return Array.isArray(a.tags) && a.tags.indexOf(_activeTag) >= 0;
+    }
+
+    // ---- Grid ----------------------------------------------------------
+    function renderGrid() {
+        const main = $('canvas-scroll');
+        const matches = _allAssets.filter(a => folderMatch(a) && searchMatch(a) && tagMatch(a));
+
+        document.body.dataset.folderFiltered =
+            (_currentFolderId !== 'all' && _currentFolderId !== 'unfiled') ? '1' : '0';
+
+        // Breadcrumb + count
+        const view =
+            _currentFolderId === 'all'      ? 'All' :
+            _currentFolderId === 'unfiled'  ? 'Unfiled' :
+            ((_folders.find(f => f.id === _currentFolderId) || {}).name || 'Folder');
+        $('bc-current').textContent = view;
+        $('bc-count').textContent =
+            matches.length === _allAssets.length
+                ? `${matches.length} asset${matches.length === 1 ? '' : 's'}`
+                : `${matches.length} / ${_allAssets.length}`;
+        $('statusbar-count').textContent =
+            matches.length === _allAssets.length
+                ? `${_allAssets.length} assets · ${_folders.length} folders`
+                : `showing ${matches.length} of ${_allAssets.length}`;
+
+        if (matches.length === 0) {
+            const reason = _searchTerm
+                ? `No assets match "${escapeHTML(_searchTerm)}"`
+                : (_activeTag
+                    ? `No assets tagged "${escapeHTML(_activeTag)}" in this view`
+                    : (_currentFolderId === 'unfiled'
+                        ? 'No unfiled assets — everything is in a folder.'
+                        : (_currentFolderId !== 'all'
+                            ? 'This folder is empty. Drag a card onto it to file something here.'
+                            : 'Vault is empty.')));
+            main.innerHTML = `<div class="empty"><div class="empty-title">Nothing to show</div><div class="empty-sub">${reason}</div></div>`;
+            return;
+        }
+        main.innerHTML = '';
+        if (_viewMode === 'list') {
+            main.appendChild(renderList(matches));
+        } else {
+            const grid = document.createElement('div');
+            grid.className = 'grid';
+            for (const a of matches) grid.appendChild(renderCard(a));
+            main.appendChild(grid);
+        }
+    }
+
+    // dev34 — list view. Same data the grid card consumes, projected
+    // into a single grid-template row. The header reuses the same
+    // template so columns stay aligned. Each row keeps drag-and-drop
+    // (assetId on dataTransfer) so filing into folders works in either
+    // view. Thumbnails come from the same async mediaPaths IPC the
+    // grid uses — placeholder cell is "—" until it resolves.
+    function renderList(matches) {
+        const list = document.createElement('div');
+        list.className = 'list';
+
+        // dev36 — sortable headers. Tags has no defined order so it stays
+        // a plain label. Each sortable cell carries [data-sort-key]; the
+        // body click handler reads that to flip the sort. The active
+        // column shows an arrow glyph (▲ asc / ▼ desc) painted via CSS.
+        const head = document.createElement('div');
+        head.className = 'list-row list-head';
+        const mkHeadCell = (label, key, opts) => {
+            const o = opts || {};
+            const cell = document.createElement('div');
+            if (key) {
+                cell.className = 'list-head-sortable';
+                cell.dataset.sortKey = key;
+                if (_listSort.key === key) {
+                    cell.dataset.sortActive = 'true';
+                    cell.dataset.sortDir = _listSort.dir;
+                }
+            }
+            if (o.align === 'right') cell.style.textAlign = 'right';
+            cell.innerHTML = `<span>${label}</span>` +
+                (key ? '<span class="list-head-arrow"></span>' : '');
+            return cell;
+        };
+        head.appendChild(mkHeadCell('', null));            // thumb col
+        head.appendChild(mkHeadCell('Asset',      'name'));
+        head.appendChild(mkHeadCell('Tags',        null));
+        head.appendChild(mkHeadCell('Resolution', 'res'));
+        head.appendChild(mkHeadCell('Duration',   'dur'));
+        head.appendChild(mkHeadCell('Size',       'size'));
+        head.appendChild(mkHeadCell('Used',       'used'));
+        head.appendChild(mkHeadCell('Added',      'added'));
+        head.appendChild(mkHeadCell('Actions',     null, { align: 'right' }));
+
+        head.addEventListener('click', (e) => {
+            const cell = e.target.closest('[data-sort-key]'); if (!cell) return;
+            const k = cell.dataset.sortKey;
+            // Toggle direction if same column; otherwise pick the
+            // sensible default per type — text ascends, numerics +
+            // dates descend (most useful "newest / biggest first").
+            let dir;
+            if (_listSort.key === k) {
+                dir = _listSort.dir === 'desc' ? 'asc' : 'desc';
+            } else {
+                dir = (k === 'name') ? 'asc' : 'desc';
+            }
+            _listSort = { key: k, dir };
+            try { localStorage.setItem('vault.listSort', JSON.stringify(_listSort)); } catch (_) {}
+            renderGrid();   // re-project; cheap, no IPC.
+        });
+
+        list.appendChild(head);
+
+        const body = document.createElement('div');
+        body.className = 'list-body';
+        const sorted = applyListSort(matches);
+        for (const a of sorted) body.appendChild(renderRow(a));
+        list.appendChild(body);
+        return list;
+    }
+
+    function renderRow(a) {
+        const isClip     = (a.type === 'clip');
+        const isCompTpl  = a.templateKind === 'comp';
+        const isLayerTpl = a.templateKind === 'layer';
+
+        const row = document.createElement('div');
+        row.className = 'list-row';
+        row.dataset.assetId = a.assetId;
+        row.dataset.type    = a.type || 'asset';
+
+        // Drag-and-drop parity with the grid card. Sidebar / pill drop
+        // targets read [data-drag-target] and accept assetId on drop.
+        row.draggable = true;
+        row.addEventListener('dragstart', (e) => {
+            row.dataset.dragging = 'true';
+            document.body.dataset.dragging = '1';
+            document.querySelectorAll('[data-droppable="1"]')
+                .forEach(el => el.dataset.dragTarget = 'true');
+            try {
+                e.dataTransfer.setData('text/plain', a.assetId);
+                e.dataTransfer.setData('application/x-chiral-asset-id', a.assetId);
+                e.dataTransfer.effectAllowed = 'move';
+            } catch (_) {}
+        });
+        row.addEventListener('dragend', () => {
+            row.dataset.dragging = 'false';
+            document.body.dataset.dragging = '0';
+            document.querySelectorAll('[data-drag-target="true"]')
+                .forEach(el => { delete el.dataset.dragTarget; delete el.dataset.dragOver; });
+        });
+
+        // Thumb cell.
+        const tcell = document.createElement('div');
+        tcell.className = 'list-thumb';
+        const tph = document.createElement('span');
+        tph.className = 'list-thumb-ph';
+        tph.textContent = isClip ? '📎' : (isCompTpl || isLayerTpl ? 'TPL' : '—');
+        tcell.appendChild(tph);
+        row.appendChild(tcell);
+
+        // Asset cell — name + origin.
+        const acell = document.createElement('div');
+        const nm = document.createElement('div');
+        nm.className = 'list-asset-name';
+        nm.textContent = a.name || '(unnamed)';
+        nm.title = a.name || '';
+        const og = document.createElement('div');
+        og.className = 'list-asset-origin';
+        og.innerHTML = `${escapeHTML(a.originProject || '?')} · <span class="mono">${escapeHTML(a.originShot || '')}</span>`;
+        acell.appendChild(nm);
+        acell.appendChild(og);
+        row.appendChild(acell);
+
+        // Tags cell — first 4 chips + "+N" overflow marker.
+        const tagsCell = document.createElement('div');
+        tagsCell.className = 'list-tags';
+        if (Array.isArray(a.tags) && a.tags.length) {
+            const shown = a.tags.slice(0, 4);
+            for (const t of shown) {
+                const ch = document.createElement('span');
+                ch.className = 'list-tag';
+                ch.textContent = t;
+                tagsCell.appendChild(ch);
+            }
+            if (a.tags.length > shown.length) {
+                const more = document.createElement('span');
+                more.className = 'list-tag-more';
+                more.textContent = `+${a.tags.length - shown.length}`;
+                more.title = a.tags.slice(shown.length).join(', ');
+                tagsCell.appendChild(more);
+            }
+        } else {
+            const dash = document.createElement('span');
+            dash.className = 'list-tag-more';
+            dash.textContent = '—';
+            tagsCell.appendChild(dash);
+        }
+        row.appendChild(tagsCell);
+
+        // Spec cells.
+        const resCell = document.createElement('div');
+        resCell.className = 'list-cell-mono';
+        resCell.textContent = fmtRes(a.specAtVault);
+        row.appendChild(resCell);
+
+        const durCell = document.createElement('div');
+        durCell.className = 'list-cell-mono';
+        durCell.textContent = fmtDuration(a.specAtVault);
+        row.appendChild(durCell);
+
+        // dev37 — Size cell. Reads sizeBytes (stamped at index-rebuild
+        // time by lib/vault.js#dirSizeBytes). Legacy rows from a vault
+        // built pre-dev37 have null sizeBytes and render "—" until the
+        // user hits Rebuild.
+        const sizeCell = document.createElement('div');
+        sizeCell.className = 'list-cell-mono';
+        sizeCell.textContent = fmtBytes(a.sizeBytes);
+        if (typeof a.sizeBytes === 'number') sizeCell.title = a.sizeBytes.toLocaleString() + ' bytes';
+        row.appendChild(sizeCell);
+
+        const usedCell = document.createElement('div');
+        usedCell.className = 'list-cell-mono list-cell-used';
+        usedCell.dataset.zero = (a.usageCount || 0) === 0 ? 'true' : 'false';
+        usedCell.textContent = `used ${a.usageCount || 0}×`;
+        row.appendChild(usedCell);
+
+        const addedCell = document.createElement('div');
+        addedCell.className = 'list-cell-mono';
+        addedCell.textContent = timeAgo(a.vaultedAt);
+        if (a.vaultedAt) addedCell.title = a.vaultedAt;
+        row.appendChild(addedCell);
+
+        // Actions cell — primary "→ AE" + kebab menu with the rest.
+        // Same affordances as the grid card; the kebab keeps the row
+        // visually quiet until needed.
+        const actCell = document.createElement('div');
+        actCell.className = 'list-actions';
+
+        const primary = document.createElement('button');
+        primary.className = 'list-action list-action-primary';
+        primary.textContent = '→ AE';
+        primary.dataset.act = 'toAE';
+        primary.title = isClip
+            ? 'Drop these files into the open AE project'
+            : 'Drop this asset into the open AE project as a folder of comps';
+        actCell.appendChild(primary);
+
+        const kebab = document.createElement('button');
+        kebab.className = 'list-kebab';
+        kebab.textContent = '⋯';
+        kebab.title = 'More actions';
+        actCell.appendChild(kebab);
+
+        const menu = document.createElement('div');
+        menu.className = 'list-kebab-menu';
+        menu.dataset.open = 'false';
+        const mkItem = (act, label, danger) => {
+            const b = document.createElement('button');
+            b.className = 'list-kebab-item' + (danger ? ' list-kebab-item-danger' : '');
+            b.dataset.act = act;
+            b.textContent = label;
+            return b;
+        };
+        if (!isClip) menu.appendChild(mkItem('toResolve',  '→ Resolve'));
+        if (!isClip) menu.appendChild(mkItem('toAEAsShot', 'as shot…'));
+        menu.appendChild(mkItem('reveal',     'Reveal'));
+        menu.appendChild(mkItem('delete',     'Delete', true));
+        actCell.appendChild(menu);
+
+        kebab.addEventListener('click', (e) => {
+            e.stopPropagation();
+            // Close any other open menu first.
+            document.querySelectorAll('.list-kebab-menu[data-open="true"]')
+                .forEach(m => { if (m !== menu) m.dataset.open = 'false'; });
+            menu.dataset.open = menu.dataset.open === 'true' ? 'false' : 'true';
+        });
+
+        const handle = async (act) => {
+            menu.dataset.open = 'false';
+            if (act === 'reveal')        await window.vault.reveal(a.assetId);
+            else if (act === 'delete') {
+                if (!confirm(`Move "${a.name}" to Vault trash? (7-day retention)`)) return;
+                const r = await window.vault.delete(a.assetId);
+                if (r.ok) { await refresh(); setStatus('Deleted (recoverable for 7 days)', 'ok'); }
+                else      setStatus('Delete failed: ' + r.error, 'error');
+            }
+            else if (act === 'toResolve')  await openImportDialog(a, 'resolve');
+            else if (act === 'toAE')       { isClip ? await sendClipToAE(a) : await sendAssetToOpenAE(a); }
+            else if (act === 'toAEAsShot') await openImportDialog(a, 'ae');
+        };
+        primary.addEventListener('click', (e) => { e.stopPropagation(); handle('toAE'); });
+        menu.addEventListener('click', (e) => {
+            const b = e.target.closest('button.list-kebab-item'); if (!b) return;
+            e.stopPropagation();
+            handle(b.dataset.act);
+        });
+
+        row.appendChild(actCell);
+
+        // Async media — same IPC the grid card uses.
+        if (!isClip) {
+            window.vault.mediaPaths(a.assetId).then(r => {
+                if (!r || !r.ok || !r.thumbnail) return;
+                const fileUrl = p => 'file:///' + p.replace(/\\/g, '/');
+                tcell.innerHTML = '';
+                const img = document.createElement('img');
+                img.src = fileUrl(r.thumbnail);
+                img.alt = '';
+                tcell.appendChild(img);
+            });
+        }
+
+        return row;
+    }
+
+    // dev32 — Trash drawer. Rendered on open via window.vault.trash.list().
+    // Single source of truth for the count is the live list; the
+    // sidebar's `_trashCount` cache is updated whenever we fetch.
+    async function refreshTrashCount() {
+        try {
+            const r = await window.vault.trash.list();
+            _trashCount = (r && r.entries) ? r.entries.length : 0;
+        } catch (_) { _trashCount = 0; }
+    }
+
+    function fmtTrashAge(entry, retentionDays) {
+        // Human-friendly: "deleted 3 days ago, 4 days left"
+        if (entry.ageDays == null) return 'deleted (unknown date)';
+        const ago = entry.ageDays === 0 ? 'today' : `${entry.ageDays}d ago`;
+        const left = (entry.daysRemaining == null)
+            ? ''
+            : (entry.daysRemaining === 0 ? ' · expires today' : ` · ${entry.daysRemaining}d left`);
+        return `deleted ${ago}${left}`;
+    }
+
+    async function openTrashDrawer() {
+        const list = $('trash-list');
+        list.innerHTML = '<div class="trash-empty-state">Loading…</div>';
+        $('trash-dialog').showModal();
+
+        const r = await window.vault.trash.list();
+        if (!r || !r.ok) {
+            list.innerHTML = '<div class="trash-empty-state">Failed to load trash.</div>';
+            return;
+        }
+        const entries = r.entries || [];
+        _trashCount = entries.length;
+        $('trash-count').textContent =
+            entries.length === 0 ? '— empty —' : `${entries.length} item${entries.length === 1 ? '' : 's'}`;
+        $('trash-retention').textContent =
+            `${r.retentionDays || 7}-day auto-purge`;
+        renderSidebar();   // refresh the count badge
+
+        if (entries.length === 0) {
+            list.innerHTML = '<div class="trash-empty-state">Nothing in trash.</div>';
+            $('trash-empty').disabled = true;
+            return;
+        }
+        $('trash-empty').disabled = false;
+        list.innerHTML = '';
+        // Sort newest first — most recently deleted is most likely to be
+        // the one the user wants to restore.
+        entries.sort((a, b) => (a.ageDays || 0) - (b.ageDays || 0));
+        for (const e of entries) {
+            const row = document.createElement('div');
+            row.className = 'trash-row';
+            row.dataset.entry = e.entry;
+            const expiring = (e.daysRemaining != null && e.daysRemaining <= 1);
+            row.innerHTML = `
+                <span class="trash-row-name" title="${escapeHTML(e.name)}">${escapeHTML(e.name)}</span>
+                <span class="trash-row-meta" data-expiring="${expiring ? 'true' : 'false'}">
+                    ${escapeHTML(fmtTrashAge(e, r.retentionDays || 7))}
+                </span>
+                <button class="trash-row-restore" data-restore="${escapeHTML(e.entry)}">Restore</button>
+            `;
+            list.appendChild(row);
+        }
+    }
+
+    $('trash-close').onclick = () => $('trash-dialog').close();
+    $('trash-list').addEventListener('click', async (e) => {
+        const btn = e.target.closest('button.trash-row-restore');
+        if (!btn) return;
+        const entry = btn.dataset.restore;
+        btn.disabled = true; btn.textContent = '…';
+        const r = await window.vault.trash.restore(entry);
+        if (!r || !r.ok) {
+            btn.disabled = false; btn.textContent = 'Restore';
+            setStatus('Restore failed: ' + (r && r.error || 'unknown'), 'error');
+            return;
+        }
+        // Drop the row in place + re-fetch the index so the asset
+        // reappears in the grid behind the modal.
+        btn.closest('.trash-row').remove();
+        await refresh();
+        await openTrashDrawer();   // re-renders the list with the row gone
+    });
+    $('trash-empty').onclick = () => $('trash-confirm-dialog').showModal();
+    $('trash-confirm-cancel').onclick = () => $('trash-confirm-dialog').close();
+    $('trash-confirm-go').onclick = async () => {
+        $('trash-confirm-dialog').close();
+        const r = await window.vault.trash.empty();
+        if (!r || !r.ok) {
+            setStatus('Empty trash failed: ' + (r && r.error || 'unknown'), 'error');
+            return;
+        }
+        setStatus(`Trash emptied · ${r.count || 0} entr${(r.count || 0) === 1 ? 'y' : 'ies'} purged`, 'ok');
+        _trashCount = 0;
+        await openTrashDrawer();   // re-render shows empty state
+        await refresh();
+    };
+
+    // ---- Refresh (top-level data load) ---------------------------------
+    async function refresh() {
+        const r = await window.vault.list();
+        $('vault-path').textContent = r.vaultRoot || '(no vault configured)';
+        _allAssets = r.assets || [];
+        _folders   = r.folders || [];
+        $('sb-stat-assets').textContent  = String(_allAssets.length);
+        $('sb-stat-folders').textContent = String(_folders.length);
+        // dev32 — pull the trash count once per refresh so the sidebar
+        // entry shows a live number. Cheap (one IPC, returns fast for
+        // an empty trash).
+        refreshTrashCount().then(() => renderSidebar());
+
+        if (!r.vaultRoot) {
+            const main = $('canvas-scroll');
+            main.innerHTML = `
+                <div class="empty">
+                    <div class="empty-title">No vault configured</div>
+                    <div class="empty-sub">Pick a folder to start a vault. It'll hold your reusable shots, animations, and templates across projects.</div>
+                    <button class="btn btn-ghost" id="btn-empty-pick" style="margin-top:14px;">Pick a folder…</button>
+                </div>`;
+            $('btn-empty-pick').onclick = () => $('btn-pick').click();
+            renderSidebar();   // shows the "+ New folder" affordance even with no vault
+            $('tagbar-scroll').innerHTML = '<span class="tagbar-empty">No vault configured.</span>';
+            setStatus('No vault configured.', '');
+            return;
+        }
+        if (!_allAssets.length) {
+            const main = $('canvas-scroll');
+            main.innerHTML = `
+                <div class="empty">
+                    <div class="empty-title">Vault is empty</div>
+                    <div class="empty-sub">From the main window's overflow menu:<br><br>
+                      <b>↑ Vault this shot</b> — saves the whole .aep + footage as a reusable asset.<br><br>
+                      <b>↑ Vault marked clips / templates…</b> — saves only items you mark with
+                      <code style="background:var(--bg-2); padding:1px 4px; border-radius:3px;">CHIRAL:TAG=name</code>
+                      in any of: Project panel Comment, Timeline layer Comment, or a layer marker (Shift+8).
+                    </div>
+                </div>`;
+            renderSidebar();
+            $('tagbar-scroll').innerHTML = '<span class="tagbar-empty">No tags yet — vault something first.</span>';
+            $('bc-current').textContent = 'All';
+            $('bc-count').textContent = '0 assets';
+            setStatus(`Vault ready · ${r.vaultRoot}`, 'ok');
+            return;
+        }
+        renderSidebar();
+        renderTagBar();
+        renderGrid();
+        setStatus(`Vault ready · ${_allAssets.length} asset${_allAssets.length === 1 ? '' : 's'}`, '');
+    }
+
+    // ---- Wire-up: search, sidebar filter, top buttons, AE busy ---------
+    $('search-input').oninput = (e) => {
+        _searchTerm = e.target.value || '';
+        // Tag bar reflects the current text-filtered scope, so re-render
+        // it too (cheap — small in-memory map walk).
+        renderTagBar();
+        renderGrid();
+    };
+    $('sb-filter-input').oninput = (e) => {
+        _sbFilter = e.target.value || '';
+        renderSidebar();
+    };
+    // dev33 — Add asset (.aep picker). The IPC handler returns
+    // { ok: false, canceled: true } if the user backed out of the
+    // dialog — we treat that as a no-op (no toast spam). On success
+    // we refresh and surface the new asset's id in the status bar
+    // so a thumbnail-render race doesn't make it look like nothing
+    // happened.
+    $('btn-add-asset').onclick = async () => {
+        const btn = $('btn-add-asset');
+        if (btn.disabled) return;
+        btn.disabled = true;
+        const original = btn.textContent;
+        btn.textContent = '…';
+        try {
+            const r = await window.vault.addExternalAEP();
+            if (r && r.canceled) return;
+            if (!r || !r.ok) {
+                setStatus('Add asset failed: ' + ((r && r.error) || 'unknown'), 'error');
+                return;
+            }
+            setStatus(`Added external asset · ${r.assetId.slice(0, 8)}`, 'ok');
+            await refresh();
+        } finally {
+            btn.disabled = false;
+            btn.textContent = original;
+        }
+    };
+
+    $('btn-refresh').onclick = refresh;
+    // dev34 — view toggle. Sync DOM to the persisted state on boot,
+    // then on click flip the mode, persist, re-render. We don't go
+    // through refresh() (which would re-fetch the index) — pure DOM
+    // re-projection is enough.
+    (function initViewToggle() {
+        const tg = $('view-toggle');
+        if (!tg) return;
+        const sync = () => {
+            tg.querySelectorAll('button[data-view]').forEach(b => {
+                b.dataset.active = (b.dataset.view === _viewMode) ? 'true' : 'false';
+            });
+        };
+        sync();
+        tg.addEventListener('click', (e) => {
+            const b = e.target.closest('button[data-view]'); if (!b) return;
+            const next = b.dataset.view;
+            if (next === _viewMode) return;
+            _viewMode = next;
+            try { localStorage.setItem('vault.viewMode', next); } catch (_) {}
+            sync();
+            renderGrid();
+        });
+    })();
+    // Close any open list-view kebab menu on outside click. Cheap
+    // global handler — beats wiring focus-out per row.
+    document.addEventListener('click', () => {
+        document.querySelectorAll('.list-kebab-menu[data-open="true"]')
+            .forEach(m => m.dataset.open = 'false');
+    });
+    $('btn-pick').onclick    = async () => {
+        const r = await window.vault.pickRoot();
+        if (r && r.ok) await refresh();
+    };
+    $('btn-rebuild').onclick = async () => {
+        setStatus('Rebuilding index…', 'busy');
+        const r = await window.vault.rebuildIndex();
+        if (r && r.ok) { setStatus(`Index rebuilt · ${r.count} assets`, 'ok'); await refresh(); }
+        else            setStatus('Rebuild failed: ' + (r && r.error), 'error');
+    };
+    // dev27 — vault badge IS the collapse trigger. We don't swap the
+    // badge glyph (the dev26 button toggled « / »); the badge stays the
+    // 🗄 icon and the collapsed/expanded state is conveyed by the
+    // sidebar width itself, which is the more honest signal.
+    $('btn-sb-collapse').onclick = () => {
+        const next = document.body.dataset.sbCollapsed === '1' ? '0' : '1';
+        document.body.dataset.sbCollapsed = next;
+        $('btn-sb-collapse').title = next === '1' ? 'Expand sidebar' : 'Collapse sidebar';
+    };
+
+    // dev20 — broadcast AE busy state. Disables card actions while a
+    // script is in flight so the user can't dispatch a second `-r`.
+    if (window.vault && typeof window.vault.onAEBusy === 'function') {
+        window.vault.onAEBusy(state => {
+            document.body.dataset.aeBusy = state.busy ? '1' : '0';
+            if (state.busy) {
+                const tag = state.label ? ` (${state.label})` : '';
+                setStatus(`After Effects busy${tag} — please wait…`, 'busy');
+            }
+        });
+    }
+
+    // dev43 — push-driven refresh. Main-process fs.watch on the vault's
+    // assets/ tree fires a debounced 'vault:changed' event whenever
+    // anything mutates (asset added / removed / file renamed). Renderer
+    // double-debounces to coalesce bursts; pause while hidden so the
+    // backgrounded vault window is free.
+    if (window.vault && typeof window.vault.onVaultChanged === 'function') {
+        let pushTimer = null;
+        window.vault.onVaultChanged(() => {
+            if (document.hidden) return;   // skip while not visible
+            if (pushTimer) clearTimeout(pushTimer);
+            pushTimer = setTimeout(() => { pushTimer = null; refresh(); }, 100);
+        });
+    }
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) refresh();   // re-sync on return to view
+    });
+
+    refresh();
+</script>
+</body>
+</html>
