@@ -245,6 +245,57 @@ def get_resolve():
             "(lib set={}, win32={}, has_attr={}).".format(
                 bool(lib), sys.platform == "win32",
                 hasattr(os, "add_dll_directory")))
+
+    # dev55 — ctypes pre-load diagnostic. The dev53/54 path got us as
+    # far as "About to import DaVinciResolveScript..." on rafag's
+    # machine — and then the log just stopped dead. No traceback, no
+    # FATAL line. That's not an ImportError Python could catch; it's
+    # the host process being terminated by Windows itself (DllMain
+    # returning FALSE, an unresolvable runtime dependency triggering
+    # FatalAppExit, AV intervention, or a similar process-level
+    # abort).
+    #
+    # We try to load fusionscript.dll directly via kernel32's
+    # LoadLibraryExW BEFORE the importlib path. Two outcomes both
+    # buy us information:
+    #   * The load FAILS but returns NULL → ctypes.GetLastError() gives
+    #     the real Win32 error code (ERROR_MOD_NOT_FOUND=126,
+    #     DLL_INIT_FAILED=1114, etc.). We log it and the import below
+    #     will fail too with a now-explicable message.
+    #   * The load HARD-CRASHES → the log still records "Trying ctypes
+    #     preload of: <path>" right before the abort, pinpointing the
+    #     load itself rather than Python's import machinery.
+    #
+    # Note: a successful preload DOESN'T short-circuit the importlib
+    # path that follows. Once fusionscript is mapped into the process,
+    # importlib will reuse the existing handle on its next attempt.
+    if lib and sys.platform == "win32" and os.path.isfile(lib):
+        try:
+            import ctypes
+            from ctypes import wintypes
+            log("Trying ctypes preload of: " + lib)
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.LoadLibraryExW.argtypes = [wintypes.LPCWSTR, wintypes.HANDLE, wintypes.DWORD]
+            kernel32.LoadLibraryExW.restype  = wintypes.HMODULE
+            # LOAD_WITH_ALTERED_SEARCH_PATH (0x08) tells the loader to
+            # treat the .dll's own directory as the start of the search
+            # path for its dependencies — same effective behavior as the
+            # add_dll_directory call above, but expressed through the
+            # explicit-load API so we get an error code on failure.
+            LOAD_WITH_ALTERED_SEARCH_PATH = 0x00000008
+            handle = kernel32.LoadLibraryExW(lib, None, LOAD_WITH_ALTERED_SEARCH_PATH)
+            if not handle:
+                err = ctypes.get_last_error()
+                try:
+                    msg = str(ctypes.WinError(err))
+                except Exception:
+                    msg = "WinError unavailable"
+                log("ctypes preload FAILED: error code {} ({})".format(err, msg))
+            else:
+                log("ctypes preload OK: handle=0x{:x}".format(handle))
+        except Exception as e:
+            log("ctypes preload exception (non-fatal): " + str(e))
+
     log("About to import DaVinciResolveScript...")
     try:
         import DaVinciResolveScript as dvr  # type: ignore

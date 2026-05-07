@@ -361,11 +361,27 @@ function runRelink(ctx, shotDirAbs, versionOverride, atPlayhead, opts) {
     _relinkInFlight.set(shotDirAbs, { startedAt: Date.now() });
 
     const fwd = p => (p || '').replace(/\\/g, '/');
+    // dev55 — prepend the Resolve install directory to PATH for the
+    // child process. add_dll_directory (set inside the Python script)
+    // covers the explicit LoadLibraryEx search path, but some delay-
+    // loaded dependencies of fusionscript.dll consult PATH at runtime
+    // — and a tester saw python.exe terminate silently when the
+    // import hit one of those. Belt-and-braces: list the install dir
+    // in BOTH places so the loader has it whichever search mode it
+    // ends up using.
+    let resolveDir = '';
+    if (ctx.RESOLVE_SCRIPT_LIB) {
+        try { resolveDir = path.dirname(ctx.RESOLVE_SCRIPT_LIB); }
+        catch (_) { resolveDir = ''; }
+    }
     const env = Object.assign({}, process.env, {
         RESOLVE_SCRIPT_API: ctx.RESOLVE_SCRIPT_API,
         RESOLVE_SCRIPT_LIB: ctx.RESOLVE_SCRIPT_LIB,
         PYTHONPATH: (process.env.PYTHONPATH ? process.env.PYTHONPATH + ';' : '')
                     + path.join(ctx.RESOLVE_SCRIPT_API, 'Modules'),
+        PATH: resolveDir
+            ? (resolveDir + ';' + (process.env.PATH || ''))
+            : (process.env.PATH || ''),
     });
     const args = [ctx.RELINK_PY, fwd(shotDirAbs)];
     if (versionOverride) args.push(versionOverride);

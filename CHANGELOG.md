@@ -13,6 +13,108 @@ bumps may break disk format).
 
 ---
 
+## [0.5.0-dev55] — 2026-05-07 — **ctypes preload diagnostic + PATH augmentation for fusionscript silent-abort**
+
+dev54 instrumentation paid off — for one tester (rafag, the
+original dev49 reporter), the new log shows everything working
+**up to the import attempt**:
+
+```
+Injecting into sys.path: ...
+DLL search check: lib='...\fusionscript.dll' platform=win32 has_add_dll_dir=True
+DLL search resolve_dir='C:\Program Files\...\DaVinci Resolve' isdir=True
+Added DLL search directory: C:\Program Files\...\DaVinci Resolve
+About to import DaVinciResolveScript...
+```
+
+…and then the log **stops dead**. No FATAL, no traceback, no
+`.relink.json` written. The `.relink.stderr.log` is empty too.
+
+That isn't a Python `ImportError`. It's the host process being
+terminated by Windows itself between "About to import…" and
+anything else — DllMain returning FALSE, an unresolvable system
+runtime triggering FatalAppExit, or AV intervention. Python's
+exception handler can't catch a process abort.
+
+(For the *other* tester — Giletinho — dev54's multi-candidate
+fusionscript discovery + fail-loud LIB existence check should
+already cover their case, where the C:\Program Files default
+didn't exist on disk. dev55 changes don't affect that path.)
+
+### Added — ctypes pre-load diagnostic in the relink script
+
+`relink_latest_render.py` now tries to load `fusionscript.dll`
+**directly via** `kernel32.LoadLibraryExW` **before** the
+importlib path. Two outcomes both buy us information that the
+importlib path can't:
+
+- **Load returns NULL**: `ctypes.GetLastError()` gives the real
+  Win32 error code. We log it (`ERROR_MOD_NOT_FOUND=126`,
+  `ERROR_DLL_INIT_FAILED=1114`, etc.) so the next failure
+  identifies *which* loader step is breaking, not just "the
+  import failed".
+- **Load hard-crashes the process**: the log still records
+  `Trying ctypes preload of: <path>` right before the abort,
+  pinpointing the load itself as the killer rather than Python's
+  import machinery.
+
+The flag passed is `LOAD_WITH_ALTERED_SEARCH_PATH (0x08)` so the
+DLL's own directory is treated as the search base for its
+dependencies — semantically equivalent to the
+`add_dll_directory` call from dev53, but routed through the
+explicit-load API so failures surface as error codes instead of
+disappearing into Python's import internals.
+
+If the preload succeeds, the importlib import below reuses the
+already-mapped module (Windows refcounts handles by name).
+
+### Added — Resolve install dir prepended to PATH in spawn env
+
+`app/lib/spawn.js` now prepends the Resolve install directory
+(parent of `RESOLVE_SCRIPT_LIB`) to the child process's `PATH`.
+`os.add_dll_directory` only affects searches that pass the
+`LOAD_LIBRARY_SEARCH_USER_DIRS` flag; some delay-loaded
+dependencies still consult `PATH` at runtime. Putting the dir in
+both places (the script-side `add_dll_directory` AND the
+parent's `PATH`) closes the gap.
+
+### Files
+
+- `scripts/resolve/relink_latest_render.py` — ctypes preload
+  diagnostic (~50 lines, all Windows-gated, all wrapped in
+  try/except so a problem with ctypes itself can't take down the
+  fail path).
+- `scripts/resolve/chiral_version.py` — `SCRIPT_VERSION`
+  dev10 → dev11.
+- `app/lib/spawn.js` — `resolveDir` derivation + `PATH` prepend
+  in the child env block of `runRelink()`.
+- `app/package.json` — dev54 → dev55.
+- `README.md` / `README.pt-br.md` — tester-build pointer.
+
+149/149 tests still pass — relink path is renderer-detached, no
+test exercises spawn-env shape directly.
+
+### Notes for testers (especially rafag)
+
+The new log will tell us EXACTLY which step is breaking, even if
+the host process still gets terminated. Three possible outcomes
+to look for in `%APPDATA%/Chiral Network/logs/relink.log` after
+a dev55 retry:
+
+1. **`ctypes preload OK: handle=0x…`** followed by a normal
+   import + relink → fixed. The `add_dll_directory` + `PATH`
+   prepend was enough.
+2. **`ctypes preload FAILED: error code N (…)`** → we have the
+   real Win32 error; can fix specifically (e.g. install the
+   missing VC++ Redistributable, point at a different lib, etc.).
+3. **Log stops at `Trying ctypes preload of: …`** → the abort is
+   happening *inside* the OS loader itself; almost certainly
+   AV / Defender / DLL signing intervention. Next step would
+   be a Defender exclusion for `<app>/resources/vendor/python/`
+   or moving to a subprocess-isolated load.
+
+---
+
 ## [0.5.0-dev54] — 2026-05-07 — **Real fusionscript.dll discovery + diagnostic instrumentation**
 
 dev53 added `os.add_dll_directory(<RESOLVE_SCRIPT_LIB dir>)` to fix
