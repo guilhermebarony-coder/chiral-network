@@ -246,6 +246,7 @@ contextBridge.exposeInMainWorld('wizard', {
     getMode:          ()      => ipcRenderer.invoke('wizard:getMode'),
     detect:           ()      => ipcRenderer.invoke('wizard:detect'),
     pickAEExe:        ()      => ipcRenderer.invoke('wizard:pickAEExe'),
+    pickAEFolder:     ()      => ipcRenderer.invoke('wizard:pickAEFolder'),  // dev52 — folder-mode AE picker
     pickRoot:         (s)     => ipcRenderer.invoke('wizard:pickRoot', s),
     // v0.5.0 — separate vault picker (may live on a different drive).
     pickVaultRoot:    (s)     => ipcRenderer.invoke('wizard:pickVaultRoot', s),

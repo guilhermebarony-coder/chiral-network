@@ -13,6 +13,115 @@ bumps may break disk format).
 
 ---
 
+## [0.5.0-dev52] — 2026-05-07 — **Forced AE step, Enter-key safety, instant filename refresh**
+
+Five threads, all driven by tester feedback on dev51:
+
+### Changed — progress timeline collapsed to a single shared grid
+
+dev51 used two separate grids (one for segments, one for labels)
+with `repeat(4, 1fr)` and `gap: 4px` on each. In theory their
+column tracks aligned; in practice sub-pixel rounding could shift a
+label by 1 px relative to its segment when the wizard window
+landed on widths not divisible by 4. dev52 makes segments AND
+labels children of the **same** grid (`grid-auto-flow: column`,
+two rows), so column N's segment and column N's label literally
+share track lines. No drift, ever, regardless of viewport width or
+localized label length. Bar→label vertical gap centralized as the
+grid's `row-gap: 8px`.
+
+### Changed — AE selection step is mandatory (no auto-skip)
+
+dev51 made the version row always-visible on Step 1 but Step 2
+was still skipped if AE was auto-detected. Tester feedback: that
+left users with no chance to confirm or override the picked
+version. dev52 moves the entire AE picker UI to Step 2 and
+**always** routes Step 1 → Step 2 on "Next →":
+
+- Step 1 ("01 Detect") is now a pure detection summary — checklist
+  status only, no picker controls.
+- Step 2 ("02 After Effects") owns the picker exclusively:
+  - Detected-installs dropdown (always populated; disabled
+    placeholder when zero detected).
+  - "Browse file…" button — file picker, finds AfterFX.exe
+    directly (existing behavior).
+  - **NEW: "Browse folder…" button** — folder picker, resolves
+    AfterFX.exe inside the chosen directory. Tries
+    `<chosen>/Support Files/AfterFX.exe` (canonical Adobe layout),
+    then `<chosen>/AfterFX.exe` (some portable builds). Errors with
+    a precise message if neither exists rather than recursing
+    blindly into a huge folder.
+  - Selected-path readout in monospace, accent-tinted when set,
+    dimmed when empty.
+  - "Next →" disabled until a path is selected.
+- Step-2 hint copy adapts to detected count: 0 / 1 / N.
+- Back from Step 3 returns to Step 2 (was: short-cut to Step 1
+  when AE was detected, which made re-picking awkward).
+
+### Added — `wizard:pickAEFolder` IPC
+
+New main-process handler in `app/main.js`. Mirrors the
+`wizard:pickAEExe` shape (`{ ok, path } | { ok: false, error }`).
+Surfaced to the renderer through `preload.js` as
+`window.wizard.pickAEFolder()`.
+
+### Changed — global Enter → render shortcut REMOVED
+
+Tester reports of accidental renders triggered by Enter (held
+after arrow-navigating shots, or after blurring an unrelated
+input) made the cost of this shortcut too high for a destructive
+action. dev52 drops it entirely — `Ctrl+R` and clicking the
+"Render new version" button remain the explicit, intentional
+gestures. The `pickPrimaryButton()` helper is kept (now unused
+at runtime) for future re-enablement under a chord like
+`Ctrl+Enter`.
+
+### Changed — filename tag (anim-name) Enter behavior
+
+Pre-dev52, pressing Enter on the filename tag input merely
+blurred it; the blur handler then asynchronously called
+`shot:setName` and `app:setPendingShotName`, but the surrounding
+UI (rail, breadcrumb, render-settings summary line) didn't repaint
+until the next user action. Felt sluggish.
+
+dev52: Enter now explicitly:
+
+1. Awaits `setName` and `setPendingShotName` so the disk state is
+   committed before any render path can read it.
+2. Invalidates `lastVersionsKey` and `lastRailKey` (the cache
+   signatures that gate repaint).
+3. Calls `updateRenderSettingsSummary()` and `refresh()` — the
+   rail row, breadcrumb, and Render Settings summary all show the
+   new name immediately.
+4. Calls `e.target.blur()` at the end — UX continues to feel like
+   "Enter commits and exits the field".
+
+A new `_animNameSkipBlur` flag lets the blur handler short-circuit
+when Enter already committed, so we don't double-fire the IPC
+pair. Click-away / Tab-out still go through the blur handler
+unchanged.
+
+### Files
+
+- `app/wizard.html`: progress markup collapsed to single grid;
+  Step 1 stripped of picker UI; Step 2 fully rebuilt with
+  dropdown + two browse buttons + selected-path readout.
+- `app/wizard.js`: `showStep()` updated for flat label markup;
+  Step 1 → Step 2 always; legacy `pickAE()` retired in favour of
+  unified `_aeBrowse('file' | 'folder')`; new `refreshAeStep()`
+  syncs Step 2 state.
+- `app/main.js`: `wizard:pickAEFolder` IPC handler.
+- `app/preload.js`: `pickAEFolder` exposure.
+- `app/index.html`: global Enter→primary-button shortcut removed;
+  `anim-name` keydown rebuilt for explicit Enter commit + refresh.
+- `app/package.json`: dev51 → dev52.
+- `README.md` / `README.pt-br.md`: tester-build pointer.
+
+149/149 tests still pass — all changes are renderer markup/glue
+plus one new IPC. No library or detection code touched.
+
+---
+
 ## [0.5.0-dev51] — 2026-05-07 — **Wizard polish: aligned timeline, always-visible AE picker, balanced rows**
 
 Three follow-ups from the dev50 wizard pass — small alignment and

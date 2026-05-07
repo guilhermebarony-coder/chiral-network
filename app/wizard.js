@@ -36,13 +36,14 @@ function showStep(n) {
     document.querySelectorAll('.pane').forEach(p => {
         p.classList.toggle('active', Number(p.dataset.pane) === n);
     });
-    // dev50 — energy-style progress segments + label tinting.
+    // dev52 — segments and labels are siblings in a column-flow grid;
+    // both selectors live directly under .progress (no inner .lbl wrapper).
     document.querySelectorAll('.progress .seg').forEach(s => {
         const dn = Number(s.dataset.n);
         s.classList.toggle('active', dn === n);
         s.classList.toggle('done',   dn < n);
     });
-    document.querySelectorAll('.progress .lbl span').forEach(l => {
+    document.querySelectorAll('.progress .lbl').forEach(l => {
         const dn = Number(l.dataset.n);
         l.classList.toggle('active', dn === n);
     });
@@ -252,20 +253,11 @@ function aeDetailLabel() {
     return n > 1 ? `${label}  ·  ${n} installs detected` : label;
 }
 
-// ---- Step 2: Fix AE --------------------------------------------------------
-async function pickAE() {
-    $('err-ae').textContent = '';
-    let r;
-    try { r = await window.wizard.pickAEExe(); }
-    catch (e) { r = { ok: false, error: e.message }; }
-    if (!r.ok) {
-        if (r.error) $('err-ae').textContent = r.error;
-        return;
-    }
-    state.aePath = r.path;
-    $('in-ae').value = r.path;
-    $('btn-next-2').disabled = false;
-}
+// dev52 — the legacy `pickAE()` helper (tied to the now-removed
+// #pick-ae button + #in-ae input on Step 2) was retired in favour of
+// the unified `_aeBrowse()` flow further down. All Step 2 picker
+// state — dropdown, file/folder browse, selected-path readout, Next
+// gate — now flows through `refreshAeStep()`.
 
 // ---- Step 3: Projects root -------------------------------------------------
 async function initRoot() {
@@ -429,19 +421,22 @@ async function clickCancel() {
 
 // ---- Wiring ----------------------------------------------------------------
 $('btn-cancel-1').onclick = clickCancel;
+// dev52 — ALWAYS go to Step 2, even when AE was auto-detected. Tester
+// feedback: the auto-skip left users with no chance to confirm or
+// override the picked version. Step 2 now owns all AE picker UI.
 $('btn-next-1').onclick = () => {
-    // If AE wasn't detected, force through Step 2 to pick it manually.
-    // Otherwise skip straight to Step 3 (root picker).
-    if (!state.aePath) { showStep(2); }
-    else               { showStep(3); initRoot(); }
+    showStep(2);
+    refreshAeStep();
 };
 
 $('btn-back-2').onclick = () => showStep(1);
 $('btn-next-2').onclick = () => { showStep(3); initRoot(); };
-$('pick-ae').onclick    = pickAE;
 
-$('btn-back-3').onclick = () => showStep(state.aePath && state.detect && state.detect.ae
-                                            && state.detect.ae.path ? 1 : 2);
+// dev52 — back from Step 3 always returns to Step 2 (the canonical AE
+// confirmation point). Pre-dev52 we used to short-cut to Step 1 when
+// AE was detected, which was a dead-end for users who wanted to
+// re-pick.
+$('btn-back-3').onclick = () => { showStep(2); refreshAeStep(); };
 $('btn-next-3').onclick = () => { showStep(4); refreshReady(); };
 $('pick-root').onclick  = pickRoot;
 
@@ -451,45 +446,89 @@ $('btn-install-resolve').onclick = installResolveNow;
 $('btn-install-python').onclick  = installPythonNow;
 $('btn-finish').onclick = clickFinish;
 
-// dev50/dev51 — AE version dropdown + Browse button.
-// Dropdown change updates state.aePath from the detected list; Browse
-// opens a file picker, dedups the result against existing entries,
-// adds it if new, and selects it. Both update the Step 1 row detail
-// so the user gets immediate feedback that their pick was registered.
-const aeSel    = $('ae-version-select');
-const aeBrowse = $('ae-browse-btn');
+// dev50/dev51/dev52 — Step 2 AE selector. Dropdown for detected
+// installs; "Browse file…" for AfterFX.exe; "Browse folder…" for
+// the parent install folder (portable / non-standard layouts where
+// we resolve AfterFX.exe inside the chosen directory).
+const aeSel          = $('ae-version-select');
+const aeBrowse       = $('ae-browse-btn');
+const aeBrowseFolder = $('ae-browse-folder-btn');
+
+// Step 2 refresh — sync the selected-path readout, the Next button,
+// and the heading hint with current state. Called on every state
+// change inside Step 2 (dropdown, file pick, folder pick) AND every
+// time we navigate INTO Step 2.
+function refreshAeStep() {
+    populateAeVersionDropdown();
+    const ok  = !!state.aePath;
+    const sel = $('ae-selected-path');
+    if (sel) {
+        sel.classList.remove('ok', 'empty');
+        if (ok) {
+            sel.textContent = 'Will use: ' + state.aePath;
+            sel.classList.add('ok');
+        } else {
+            sel.textContent = 'No path selected yet — pick one above.';
+            sel.classList.add('empty');
+        }
+    }
+    const next = $('btn-next-2');
+    if (next) next.disabled = !ok;
+    const hint = $('ae-step-hint');
+    if (hint) {
+        const n = state.aeVersions.length;
+        if (n === 0) {
+            hint.textContent = 'No After Effects install was found in the standard locations. Use Browse file… or Browse folder… to point Chiral Network at AfterFX.exe.';
+        } else if (n === 1) {
+            hint.textContent = 'One After Effects install detected. Confirm it below, or Browse to pick a different copy.';
+        } else {
+            hint.textContent = n + ' After Effects installs detected. Pick which one Chiral Network should drive.';
+        }
+    }
+    $('err-ae').textContent = '';
+}
 
 if (aeSel) {
     aeSel.addEventListener('change', () => {
         const idx = parseInt(aeSel.value, 10);
         if (Number.isFinite(idx) && state.aeVersions[idx]) {
             state.aePath = state.aeVersions[idx].path;
+            // Mirror to Step 1's status row so the back-and-forth user
+            // sees the pick reflected there too.
             setRow('detect-list', 'ae', 'ok', aeDetailLabel());
+            refreshAeStep();
         }
     });
 }
 
-if (aeBrowse) {
-    aeBrowse.addEventListener('click', async () => {
-        let r;
-        try { r = await window.wizard.pickAEExe(); }
-        catch (e) { r = { ok: false, error: e && e.message }; }
-        if (!r || !r.ok) {
-            if (r && r.error) $('err-ae').textContent = r.error;
-            return;
-        }
-        // Dedup — picking the same path twice shouldn't grow the dropdown.
-        let idx = state.aeVersions.findIndex(x => x.path === r.path);
-        if (idx < 0) {
-            state.aeVersions.push(deriveAeMeta(r.path));
-            idx = state.aeVersions.length - 1;
-        }
-        state.aePath = r.path;
-        populateAeVersionDropdown();
-        if (aeSel) aeSel.value = String(idx);
-        setRow('detect-list', 'ae', 'ok', aeDetailLabel());
-    });
+// Shared handler for both Browse buttons. `kind` selects file vs folder
+// IPC; the resulting path goes through the same dedup + select flow.
+async function _aeBrowse(kind) {
+    let r;
+    try {
+        r = (kind === 'folder')
+            ? await window.wizard.pickAEFolder()
+            : await window.wizard.pickAEExe();
+    } catch (e) {
+        r = { ok: false, error: e && e.message };
+    }
+    if (!r || !r.ok) {
+        if (r && r.error) $('err-ae').textContent = r.error;
+        return;
+    }
+    let idx = state.aeVersions.findIndex(x => x.path === r.path);
+    if (idx < 0) {
+        state.aeVersions.push(deriveAeMeta(r.path));
+        idx = state.aeVersions.length - 1;
+    }
+    state.aePath = r.path;
+    setRow('detect-list', 'ae', 'ok', aeDetailLabel());
+    refreshAeStep();
+    if (aeSel) aeSel.value = String(idx);
 }
+
+if (aeBrowse)       aeBrowse.addEventListener('click',       () => _aeBrowse('file'));
+if (aeBrowseFolder) aeBrowseFolder.addEventListener('click', () => _aeBrowse('folder'));
 
 // ---- Boot ------------------------------------------------------------------
 // On startup we ask main for the mode + current config. In edit mode the

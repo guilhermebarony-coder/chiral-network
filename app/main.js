@@ -2366,6 +2366,35 @@ ipcMain.handle('wizard:pickAEExe', async () => {
     return { ok: true, path: p };
 });
 
+// dev52 — folder-mode AE picker. Use case: portable / non-standard /
+// network-mounted AE installs where the user wants to point us at the
+// containing folder rather than hunting for AfterFX.exe inside it.
+// We try the canonical layout first (.../Support Files/AfterFX.exe)
+// then a flat fallback (.../AfterFX.exe) seen in some portable builds.
+// Anything else → ask the user to use Browse file… instead so we
+// don't ship a recursive walker that could stall on huge folders.
+ipcMain.handle('wizard:pickAEFolder', async () => {
+    const parent = wizardWin && !wizardWin.isDestroyed() ? wizardWin : null;
+    const res = await dialog.showOpenDialog(parent, {
+        title: 'Pick the After Effects install folder',
+        properties: ['openDirectory'],
+    });
+    if (res.canceled || !res.filePaths[0]) return { ok: false };
+    const root = res.filePaths[0];
+    const candidates = [
+        path.join(root, 'Support Files', 'AfterFX.exe'),
+        path.join(root, 'AfterFX.exe'),
+    ];
+    for (const c of candidates) {
+        try { if (fs.existsSync(c)) return { ok: true, path: c }; }
+        catch (_) { /* keep trying */ }
+    }
+    return {
+        ok: false,
+        error: 'AfterFX.exe not found inside this folder (tried "Support Files/" and the folder root). Use Browse file… to point at the .exe directly.',
+    };
+});
+
 ipcMain.handle('wizard:pickRoot', async (_e, suggested) => {
     const parent = wizardWin && !wizardWin.isDestroyed() ? wizardWin : null;
     const res = await dialog.showOpenDialog(parent, {

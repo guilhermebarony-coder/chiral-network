@@ -66,16 +66,22 @@
                font-family: 'JetBrains Mono', Consolas, monospace; }
 
         /* Energy-style progress bar — flat segments with accent on active.
-           Replaces the old 4 dots. Each segment is full width / N steps,
-           thin, and the active one fills with the gold accent. Done
-           segments stay accent-tinted (lower alpha) so the user can read
-           progress at a glance even with peripheral vision. */
+           dev52 — segments and labels are wrapped in a single grid so they
+           SHARE one set of grid tracks. This guarantees that label N is
+           always perfectly centered under segment N regardless of viewport
+           width or label string length (English vs. Portuguese, etc.) —
+           the bar's track lines and the label's track lines are literally
+           the same lines, not two grids that "happen to use the same
+           formula" (where sub-pixel rounding could drift them by 1 px). */
         .progress {
             display: grid; grid-template-columns: repeat(4, 1fr);
-            gap: 4px; margin: 0 0 22px;
+            grid-template-rows: auto auto;
+            grid-auto-flow: column;
+            row-gap: 8px; column-gap: 4px;
+            margin: 0 0 22px;
         }
         .progress .seg {
-            height: 3px; background: var(--line); position: relative;
+            height: 3px; background: var(--line);
             transition: background 0.25s ease;
         }
         .progress .seg.done   { background: var(--accent-line); }
@@ -84,17 +90,11 @@
             box-shadow: 0 0 8px var(--accent-soft);
         }
         .progress .lbl {
-            display: grid; grid-template-columns: repeat(4, 1fr);
-            gap: 4px; margin-top: 8px;
             font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase;
-            color: var(--fg-dim);
+            color: var(--fg-dim); text-align: center;
+            line-height: 1.2;
         }
-        /* dev51 — labels are centered under their segment, not left-aligned.
-           Each label cell owns 1fr of the parent's grid; centering inside
-           the cell guarantees the label sits visually under its bar
-           regardless of how long the localized text is. */
-        .progress .lbl span { text-align: center; }
-        .progress .lbl span.active { color: var(--accent); }
+        .progress .lbl.active { color: var(--accent); }
 
         /* Panes */
         .pane { display: none; }
@@ -213,6 +213,17 @@
             background: var(--accent-soft); border-color: var(--accent);
         }
         .ae-version-row.hidden { display: none; }
+        /* Selected-path readout — small, monospace, accent-tinted so the
+           user gets an unambiguous "this is the path we'll save" line.
+           Empty content collapses gracefully thanks to the &nbsp; fallback. */
+        .ae-version-row .ae-selected {
+            margin-top: 10px; font-size: 10.5px; color: var(--fg-mute);
+            font-family: 'JetBrains Mono', Consolas, monospace;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            direction: rtl; text-align: left;
+        }
+        .ae-version-row .ae-selected.ok    { color: var(--accent); }
+        .ae-version-row .ae-selected.empty { color: var(--fg-dim); }
 
         /* Nav */
         .nav { display: flex; gap: 8px; margin-top: 22px; justify-content: flex-end; }
@@ -258,17 +269,18 @@
         <span class="stage">Setup · Pre-Alpha</span>
     </header>
 
+    <!-- dev52 — segments and labels share one 4-column grid (column-flow)
+         so column N's segment and column N's label sit on the same track
+         lines. No two-grid drift, no rounding gap. -->
     <div class="progress">
         <div class="seg active" data-n="1"></div>
+        <div class="lbl active" data-n="1">01 · Detect</div>
         <div class="seg"        data-n="2"></div>
+        <div class="lbl"        data-n="2">02 · After Effects</div>
         <div class="seg"        data-n="3"></div>
+        <div class="lbl"        data-n="3">03 · Projects root</div>
         <div class="seg"        data-n="4"></div>
-        <div class="lbl">
-            <span class="active" data-n="1">01 · Detect</span>
-            <span                data-n="2">02 · After Effects</span>
-            <span                data-n="3">03 · Projects root</span>
-            <span                data-n="4">04 · Ready</span>
-        </div>
+        <div class="lbl"        data-n="4">04 · Ready</div>
     </div>
 
     <!-- Step 1: Detect -->
@@ -296,34 +308,38 @@
         <small class="muted">Components marked <span class="pill">vendored</span>
            ship inside Chiral Network — no extra install needed.</small>
 
-        <!-- AE version selector: dev51 — always visible, with a manual
-             Browse… button for portable / custom / missed installs. The
-             header / hint copy adapts to the detected count. -->
-        <div id="ae-version-row" class="ae-version-row hidden">
-            <div class="ae-row-head">After Effects</div>
-            <div class="ae-row-hint">&nbsp;</div>
-            <div class="ae-controls">
-                <select id="ae-version-select"></select>
-                <button id="ae-browse-btn" class="ae-browse-btn"
-                        type="button">Browse&hellip;</button>
-            </div>
-        </div>
-
         <nav class="nav">
             <button id="btn-cancel-1" class="secondary">Cancel</button>
             <button id="btn-next-1">Next &rarr;</button>
         </nav>
     </section>
 
-    <!-- Step 2: Fix AE (only if Step 1 found nothing) -->
+    <!-- Step 2: After Effects — always shown.
+         dev52 — picker UI lives here exclusively (was on Step 1 in dev51,
+         which auto-skipped this pane when AE was detected). The user
+         always lands here to see/confirm what was detected, with both
+         file and folder browse fallbacks for non-standard installs. -->
     <section class="pane" data-pane="2">
-        <h1>Where is After Effects installed?</h1>
-        <p class="muted">Point us to <code>AfterFX.exe</code>. It's usually at
-           <code>C:\Program Files\Adobe\Adobe After Effects YYYY\Support Files\</code>.</p>
-        <div class="field">
-            <input id="in-ae" readonly placeholder="Not selected">
-            <button id="pick-ae">Browse&hellip;</button>
+        <h1>After Effects</h1>
+        <p class="muted" id="ae-step-hint">Pick the After Effects build
+           Chiral Network should drive. Use “Browse…” for a custom or
+           portable install.</p>
+
+        <div id="ae-version-row" class="ae-version-row">
+            <div class="ae-row-head">Detected installs</div>
+            <div class="ae-row-hint">&nbsp;</div>
+            <div class="ae-controls">
+                <select id="ae-version-select"></select>
+                <button id="ae-browse-btn" class="ae-browse-btn"
+                        type="button">Browse&nbsp;file&hellip;</button>
+                <button id="ae-browse-folder-btn" class="ae-browse-btn"
+                        type="button" title="Pick the 'Adobe After Effects YYYY' folder; we'll find AfterFX.exe inside.">
+                    Browse&nbsp;folder&hellip;
+                </button>
+            </div>
+            <div class="ae-selected" id="ae-selected-path">&nbsp;</div>
         </div>
+
         <div class="err" id="err-ae"></div>
         <nav class="nav">
             <button id="btn-back-2" class="secondary">&larr; Back</button>

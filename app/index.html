@@ -3090,7 +3090,13 @@
             if (tag) parts.push('"' + tag + '"');
             $('rs-summary').textContent = parts.join(' · ');
         }
+        // dev52 — _animNameSkipBlur lets the Enter handler short-circuit
+        // the blur listener so we don't double-fire setName / setPendingShotName.
+        // The blur handler still owns the "user clicked away / Tab'd out"
+        // path; Enter is the explicit "commit + show me now" gesture.
+        let _animNameSkipBlur = false;
         $('anim-name').addEventListener('blur', async e => {
+            if (_animNameSkipBlur) { _animNameSkipBlur = false; return; }
             const v = e.target.value;
             const r = await window.api.setName(v);
             if (r && typeof r.name === 'string') e.target.value = r.name;
@@ -3104,7 +3110,34 @@
                 window.api.setPendingShotName(v || '');
             }
         });
-        $('anim-name').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); });
+        // dev52 — Enter explicitly commits the new filename tag AND
+        // forces an immediate refresh of the rail / shot UI / breadcrumb
+        // so the new name is visible without waiting for the next user
+        // action. Pre-dev52, Enter just blurred the field, which kicked
+        // setName but left the surrounding UI showing the old name until
+        // the next info() poll. preventDefault + stopPropagation also
+        // shield against the (now-removed) global Enter→render binding
+        // — belt-and-braces against any keydown listener we add later.
+        $('anim-name').addEventListener('keydown', async e => {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            e.stopPropagation();
+            _animNameSkipBlur = true;
+            const v = e.target.value;
+            const r = await window.api.setName(v);
+            if (r && typeof r.name === 'string') e.target.value = r.name;
+            if (window.api.setPendingShotName) {
+                await window.api.setPendingShotName(v || '');
+            }
+            // Invalidate cached signatures so the next refresh actually
+            // repaints the rail row / version cards / summary line
+            // instead of skipping them as "unchanged".
+            lastVersionsKey = null;
+            lastRailKey     = null;
+            updateRenderSettingsSummary();
+            refresh();
+            e.target.blur();
+        });
 
         // Click routing is capability-based, not origin-based:
         //   * .aep already exists (any origin) → just open it. Covers
@@ -4685,13 +4718,18 @@
         });
 
         // ---- Shot navigation shortcuts ------------------------------------
-        // Up/Down arrows cycle through the current project's shots; Enter
-        // triggers the context-sensitive primary action for the active
-        // shot. Suppressed whenever the user is typing (input/textarea/
+        // Up/Down arrows cycle through the current project's shots.
+        // Suppressed whenever the user is typing (input/textarea/
         // contenteditable or label-edit mode) so we never hijack text
         // keystrokes. No modifier keys required — arrow-to-navigate is
         // standard in creative tools (Premiere Project, AE Project, Resolve
         // Media Pool) and doesn't collide with any existing binding.
+        //
+        // dev52 — REMOVED: bare Enter triggering the primary action.
+        // Tester reports of accidental renders made the cost too high;
+        // explicit Ctrl+R / clicking the button is the canonical gesture.
+        // The pickPrimaryButton() helper below is now unused at runtime
+        // but kept for future re-enablement under a chord (e.g. Ctrl+Enter).
         //
         // Primary-action priority (matches the spec):
         //   1. Shot with versions + .aep on disk  -> Render new version
@@ -4764,19 +4802,13 @@
             } else if (e.key === 'ArrowUp') {
                 e.preventDefault();
                 navigateShot(-1);
-            } else if (e.key === 'Enter') {
-                // Enter from a bare body focus fires the current shot's
-                // primary action. We fetch info to pick the button rather
-                // than relying on cached flags — state changes fast during
-                // long renders.
-                e.preventDefault();
-                (async () => {
-                    const info = await window.api.info();
-                    if (!info || !info.shot) return;
-                    const btn = pickPrimaryButton(info);
-                    if (btn) btn.click();
-                })();
             }
+            // dev52 — REMOVED: Enter-from-body → primary-button shortcut.
+            // Tester reports of accidental renders (Enter held after
+            // navigating with arrow keys, Enter pressed after blurring
+            // an unrelated input, etc.) made this too dangerous for a
+            // destructive action like "Render new version". Ctrl+R still
+            // triggers a render explicitly; that's the intentional gesture.
         });
 
         // ---- Shot Jump Palette (Ctrl+Space) ----------------------------------
