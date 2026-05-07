@@ -201,27 +201,50 @@ def get_resolve():
         if os.path.isfile(os.path.join(mod_dir, "DaVinciResolveScript.py")) and mod_dir not in sys.path:
             log("Injecting into sys.path: " + mod_dir)
             sys.path.insert(0, mod_dir)
-    # dev53 — register the Resolve install directory with the Windows DLL
-    # loader BEFORE importing fusionscript (which DaVinciResolveScript.py
-    # loads dynamically). fusionscript.dll has sibling .dll dependencies
-    # in the same folder (BMDPanelAPI.dll, MathScript.dll, etc.) that the
-    # loader can't find when our spawned python.exe lives elsewhere on
-    # disk — and on some Windows configurations, the failed sibling load
-    # aborts the process **without** Python ever raising ImportError, so
-    # the script dies silently right after the sys.path inject (a tester
-    # on dev49 hit exactly this — log truncates mid-flight, no traceback,
-    # no .relink.json written, Electron times out with no signal). Adding
-    # the directory to the DLL search path lets the loader find them.
-    # Python 3.8+ Windows-only API; harmless no-op elsewhere.
+    # dev53 (instrumented in dev54) — register the Resolve install
+    # directory with the Windows DLL loader BEFORE importing
+    # fusionscript. dev53's fix was structurally right but had silent
+    # skip paths (lib unset / dir doesn't exist) that masked configs
+    # where RESOLVE_SCRIPT_LIB simply pointed at the wrong location.
+    # dev54: log every check unconditionally so the log file always
+    # tells us WHY add_dll_directory was or wasn't called, AND fail
+    # loudly upfront if the LIB path doesn't actually exist on disk
+    # — that's a config bug, not a load-time mystery, and surfacing
+    # it now beats letting it become a "module not found" later.
     lib = os.environ.get("RESOLVE_SCRIPT_LIB")
+    log("DLL search check: lib={!r} platform={} has_add_dll_dir={}".format(
+        lib, sys.platform, hasattr(os, "add_dll_directory")))
+    if lib and not os.path.isfile(lib):
+        # Hard-fail: every downstream symptom (DLL load failed,
+        # cryptic ERROR_MOD_NOT_FOUND, silent process abort) is
+        # really just "the .dll isn't where we said it would be".
+        # Crashing with a clear error means the Electron side reports
+        # a usable message instead of pointing the tester at the same
+        # log they're already staring at.
+        raise RuntimeError(
+            "RESOLVE_SCRIPT_LIB points at a file that does not exist: "
+            + lib + ". Resolve may be installed under a different drive "
+            "or path. Run the Setup Wizard's Repair installation step, "
+            "or set RESOLVE_SCRIPT_LIB manually to the real path of "
+            "fusionscript.dll on this machine."
+        )
     if lib and sys.platform == "win32" and hasattr(os, "add_dll_directory"):
         resolve_dir = os.path.dirname(lib)
+        log("DLL search resolve_dir={!r} isdir={}".format(
+            resolve_dir, os.path.isdir(resolve_dir) if resolve_dir else False))
         if resolve_dir and os.path.isdir(resolve_dir):
             try:
-                log("Adding DLL search directory: " + resolve_dir)
                 os.add_dll_directory(resolve_dir)
+                log("Added DLL search directory: " + resolve_dir)
             except Exception as e:
                 log("add_dll_directory failed (non-fatal): " + str(e))
+        else:
+            log("Skipping add_dll_directory: resolve_dir not a directory.")
+    else:
+        log("Skipping add_dll_directory: precondition false "
+            "(lib set={}, win32={}, has_attr={}).".format(
+                bool(lib), sys.platform == "win32",
+                hasattr(os, "add_dll_directory")))
     log("About to import DaVinciResolveScript...")
     try:
         import DaVinciResolveScript as dvr  # type: ignore

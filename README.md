@@ -231,7 +231,7 @@ Replace your existing `Chiral-Network-x.y.z-x64/` folder wholesale —
 no settings migration is needed; user data lives in
 `%APPDATA%/Roundtrip/` and survives between versions.
 
-The current pre-alpha tester build is **0.5.0-dev53**. See
+The current pre-alpha tester build is **0.5.0-dev54**. See
 [`CHANGELOG.md`](CHANGELOG.md) for the full version history.
 
 ---

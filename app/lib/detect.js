@@ -112,8 +112,29 @@ function detectResolveScripting() {
         if (_hasDvrModule(c)) { apiPath = c; moduleExists = true; break; }
     }
 
-    const libPath = process.env.RESOLVE_SCRIPT_LIB
-        || 'C:\\Program Files\\Blackmagic Design\\DaVinci Resolve\\fusionscript.dll';
+    // dev54 — search multiple candidate locations for fusionscript.dll
+    // instead of hard-coding the C:\Program Files\... path. A tester on
+    // dev53 hit "DLL load failed while importing fusionscript: module
+    // not found" because their Resolve was installed under a different
+    // letter (D:\Programs\...), and the env var we set pointed at a
+    // non-existent C:\Program Files\... path. We try the env override
+    // first, then both Windows install layouts (Program Files +
+    // ProgramData), then fall back to the C: default for the lib STRING
+    // so downstream callers always get a non-null path — the
+    // libExists flag below tells them if it's usable.
+    function _libCandidates() {
+        const list = [];
+        if (process.env.RESOLVE_SCRIPT_LIB) list.push(process.env.RESOLVE_SCRIPT_LIB);
+        list.push('C:\\Program Files\\Blackmagic Design\\DaVinci Resolve\\fusionscript.dll');
+        list.push('C:\\ProgramData\\Blackmagic Design\\DaVinci Resolve\\fusionscript.dll');
+        return list;
+    }
+    const libCandidates = _libCandidates();
+    let libPath = libCandidates[0];
+    for (const c of libCandidates) {
+        try { if (fs.existsSync(c)) { libPath = c; break; } }
+        catch (_) { /* keep trying */ }
+    }
     const utilDir = process.env.APPDATA
         ? path.join(process.env.APPDATA, 'Blackmagic Design', 'DaVinci Resolve',
                     'Support', 'Fusion', 'Scripts', 'Utility')

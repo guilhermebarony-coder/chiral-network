@@ -13,6 +13,101 @@ bumps may break disk format).
 
 ---
 
+## [0.5.0-dev54] — 2026-05-07 — **Real fusionscript.dll discovery + diagnostic instrumentation**
+
+dev53 added `os.add_dll_directory(<RESOLVE_SCRIPT_LIB dir>)` to fix
+silent process aborts. The tester re-tested on dev53 and got a
+*clean* ImportError this time (Python's exception handler caught
+it instead of the process aborting), but the relink **still failed
+with the same root error**: "DLL load failed while importing
+fusionscript: cannot find specified module".
+
+Crucially, the dev53 log line "Adding DLL search directory:" was
+**absent** from the log. That meant the `if os.path.isdir(...)`
+inner check returned False — which only happens when the
+`RESOLVE_SCRIPT_LIB` path's parent directory doesn't exist on the
+machine.
+
+### Root cause
+
+Detection in `app/lib/detect.js` was hard-coding:
+
+```
+'C:\\Program Files\\Blackmagic Design\\DaVinci Resolve\\fusionscript.dll'
+```
+
+…as the only fallback when `RESOLVE_SCRIPT_LIB` env wasn't set.
+For testers whose Resolve is installed on a different drive
+(`D:\Programs\…`) or the alternate ProgramData layout, that path
+doesn't exist. We dutifully exported the env var anyway, then the
+Python-side load failed because **the .dll genuinely wasn't
+there**, not because of a sibling-DLL search-path issue.
+
+### Changed — `detect.js` searches multiple `fusionscript.dll` locations
+
+`detectResolveScripting()` now probes a candidate list and picks
+the **first existing file** instead of returning a fixed string:
+
+```
+1. process.env.RESOLVE_SCRIPT_LIB             (caller override)
+2. C:\Program Files\Blackmagic Design\DaVinci Resolve\fusionscript.dll
+3. C:\ProgramData\Blackmagic Design\DaVinci Resolve\fusionscript.dll
+```
+
+Falls back to candidate 1 (the env override or the C:\Program Files
+default) if none exist, so downstream callers always get a
+non-null string. The pre-existing `libExists` flag still surfaces
+"is this usable" to the wizard.
+
+### Changed — relink script diagnostics now unconditional
+
+dev53's `if os.path.isdir(resolve_dir):` check skipped silently
+when false, which is exactly how we missed this for two builds.
+dev54 logs **every** branch:
+
+- `DLL search check: lib=… platform=… has_add_dll_dir=…` — values
+  for every condition in the outer `if`. Always logged.
+- `DLL search resolve_dir=… isdir=…` — inner-condition values.
+  Always logged when outer test passed.
+- `Added DLL search directory: …` — success line (note: dev53
+  logged BEFORE the call; dev54 logs AFTER, so a successful entry
+  in the log proves the call returned).
+- `Skipping add_dll_directory: …` — explicit reason on every skip
+  path. Never silent again.
+
+### Added — fail-loudly check for missing `RESOLVE_SCRIPT_LIB`
+
+If `lib` is set but `os.path.isfile(lib)` is False, the relink
+script raises a clear `RuntimeError` immediately with the offending
+path + a one-sentence remediation pointer ("Run the Setup Wizard's
+Repair installation step, or set RESOLVE_SCRIPT_LIB manually…").
+The Electron side picks this up via `.relink.json` and surfaces it
+on the status strip, so the tester sees a real error instead of a
+cryptic native-loader message.
+
+### Files
+
+- `app/lib/detect.js` — `_libCandidates()` helper + first-existing
+  selection in `detectResolveScripting()`.
+- `scripts/resolve/relink_latest_render.py` — verbose unconditional
+  logging block + fail-loud LIB existence check.
+- `scripts/resolve/chiral_version.py` — `SCRIPT_VERSION` dev9 → dev10.
+- `app/package.json` — dev53 → dev54.
+- `README.md` / `README.pt-br.md` — tester-build pointer.
+
+149/149 tests passing.
+
+### Tester ask
+
+If dev54 still fails on the same machine, the log will now show
+exactly which condition is false. Worth a quick check before
+re-testing: **does `C:\Program Files\Blackmagic Design\DaVinci
+Resolve\fusionscript.dll` actually exist on the failing machine?**
+If not — where IS Resolve installed? — that confirms the dev54
+detection fix and tells us whether to add another candidate path.
+
+---
+
 ## [0.5.0-dev53] — 2026-05-07 — **Resolve DLL search path fix + relink import diagnostics**
 
 Tester field report on dev49 (also reproducible on dev52): relink
