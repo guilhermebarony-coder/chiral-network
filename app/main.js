@@ -128,7 +128,10 @@ function resolvePythonPath() {
             version: v, inRange: detect.isPythonInSupportedRange(v),
         };
     }
-    const r = detect.detectPython(ROOT);
+    // dev60 — pass RESOLVE_SCRIPT_LIB so detectPython can pick the right
+    // vendored Python (3.10 for Resolve <21, 3.13 for Resolve 21+) by
+    // reading fusionscript.dll's import strings.
+    const r = detect.detectPython(ROOT, RESOLVE_SCRIPT_LIB);
     if (r && r.path) return r;
     return { path: 'py', source: 'fallback', version: null, inRange: false };
 }
@@ -2736,9 +2739,15 @@ function _onPathSync(name) {
     } catch (_) { return null; }
 }
 function checkRuntimeFallbacks() {
-    const vendoredPy     = path.join(ROOT, 'vendor', 'python', 'python.exe');
+    // dev60 — vendor/python was split into vendor/python310 and
+    // vendor/python313. Either being present is sufficient to consider
+    // Python "vendored" — the picker will choose the right one at spawn
+    // time. We don't probe both individually here because we only need
+    // to know whether the user has any vendored runtime to fall back to.
+    const vendoredPy313  = path.join(ROOT, 'vendor', 'python313', 'python.exe');
+    const vendoredPy310  = path.join(ROOT, 'vendor', 'python310', 'python.exe');
     const vendoredFFmpeg = path.join(ROOT, 'vendor', 'ffmpeg', 'ffmpeg.exe');
-    const pyVendored = fs.existsSync(vendoredPy);
+    const pyVendored = fs.existsSync(vendoredPy313) || fs.existsSync(vendoredPy310);
     const ffVendored = fs.existsSync(vendoredFFmpeg);
     const pyPath = pyVendored ? null : (_onPathSync('python.exe') || _onPathSync('py.exe'));
     const ffPath = ffVendored ? null : _onPathSync('ffmpeg.exe');

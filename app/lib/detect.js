@@ -192,6 +192,73 @@ const SUPPORTED_PYTHON = Object.freeze({
     label: '3.10 – 3.13',
 });
 
+// dev60 — Resolve major versions ship fusionscript.dll built against
+// different Python ABIs. Pre-Resolve-21 fusionscript directly imports
+// `python310.dll` (CPython 3.10 ABI lock); Resolve 21+ fusionscript
+// imports only `python3.dll` (the limited / stable ABI forwarder) and
+// is compiled against Python 3.11+ stable ABI — calling into it from
+// 3.10 access-violates inside PyInit_fusionscript before any Python
+// exception can be raised. We can't pick a single Python that covers
+// both, so we ship two embeddables in vendor/ and pick at spawn time
+// by reading fusionscript.dll's import strings.
+//
+// Heuristic:
+//   * sees `python310.dll` literal     → vendor/python310 (3.10 ABI lock)
+//   * sees only `python3.dll` literal  → vendor/python313 (stable ABI)
+//   * neither found / file unreadable  → vendor/python313 (newer is the
+//                                         safer default — Resolve 21 is
+//                                         the only released line that
+//                                         needs it; the 3.10 vendor is
+//                                         only kept for legacy testers)
+//
+// We read the head of the .dll (first 4 MB is plenty — import tables
+// are at the front of a PE), so the cost is bounded regardless of
+// fusionscript size. Result is cached per absolute libPath.
+const _vendoredPyCache = new Map();   // absLibPath -> 'python310' | 'python313'
+
+function pickVendoredPythonDir(libPath) {
+    if (!libPath) return 'python313';
+    const abs = path.resolve(libPath);
+    if (_vendoredPyCache.has(abs)) return _vendoredPyCache.get(abs);
+
+    let pick = 'python313';   // default — newest, broadest stable-ABI compat
+    try {
+        if (fs.existsSync(abs)) {
+            const fd = fs.openSync(abs, 'r');
+            try {
+                const len = Math.min(4 * 1024 * 1024, fs.fstatSync(fd).size);
+                const buf = Buffer.alloc(len);
+                fs.readSync(fd, buf, 0, len, 0);
+                // Strings in PE import tables are 7-bit ASCII, so latin1
+                // decode is exact and faster than utf-8.
+                const s = buf.toString('latin1');
+                if (/python310\.dll/i.test(s)) {
+                    pick = 'python310';
+                }
+                // Any explicit python3XX.dll lock (>=311) → pick 3.13. We
+                // don't ship a separate vendor for each minor; 3.13 is the
+                // newest stable ABI consumer in our shipping pair.
+                else if (/python31[1-9]\.dll/i.test(s)) {
+                    pick = 'python313';
+                }
+                // Otherwise (only python3.dll forwarder, or no python*.dll
+                // string at all) we fall through to the 'python313' default.
+            } finally {
+                try { fs.closeSync(fd); } catch (_) {}
+            }
+        }
+    } catch (_) {
+        // Read failure → keep the default. The caller still gets a usable
+        // vendor dir; if it turns out to be the wrong one for this Resolve,
+        // the relink script will surface a clear error rather than a silent
+        // process abort (dev57 faulthandler captures the C-level dump).
+    }
+    _vendoredPyCache.set(abs, pick);
+    return pick;
+}
+
+function clearVendoredPythonCache() { _vendoredPyCache.clear(); }
+
 // Exposed for tests — pure string parsing, no side effects.
 function parsePythonVersionString(s) {
     if (!s) return null;
@@ -242,17 +309,37 @@ function _probePythonVersion(cmd) {
 // When nothing in-range is found but SOMETHING runs, the out-of-range best
 // hit is returned so callers can paint a precise error ("Python 3.14 found
 // but needs 3.10-3.13") instead of the ambiguous "missing".
-function detectPython(appRoot) {
+function detectPython(appRoot, libPath) {
     const tried = [];
 
     if (appRoot) {
-        const bundled = path.join(appRoot, 'vendor', 'python', 'python.exe');
+        // dev60 — pick between vendor/python310 and vendor/python313 by
+        // reading fusionscript.dll's import strings. The picker defaults
+        // to python313 if libPath is missing or unreadable, so this stays
+        // working when callers don't pass libPath (legacy callers + tests).
+        const dir = pickVendoredPythonDir(libPath);
+        const bundled = path.join(appRoot, 'vendor', dir, 'python.exe');
         if (fs.existsSync(bundled)) {
             const v = _probePythonVersion(bundled);
             const inRange = isPythonInSupportedRange(v);
-            tried.push({ path: bundled, source: 'bundled', version: v, inRange });
+            tried.push({ path: bundled, source: 'bundled', version: v, inRange, vendorDir: dir });
             if (inRange) {
-                return { path: bundled, source: 'bundled', version: v, inRange: true, tried };
+                return { path: bundled, source: 'bundled', version: v, inRange: true, vendorDir: dir, tried };
+            }
+        }
+        // Fallback — if the chosen vendor dir is missing for any reason
+        // (manual deletion, half-extracted vendor.zip), try the OTHER
+        // one before giving up. Better to relink with the wrong Python
+        // and surface the clear faulthandler error than to fail at
+        // detection time with no diagnostic.
+        const alt = dir === 'python313' ? 'python310' : 'python313';
+        const altPath = path.join(appRoot, 'vendor', alt, 'python.exe');
+        if (fs.existsSync(altPath)) {
+            const v = _probePythonVersion(altPath);
+            const inRange = isPythonInSupportedRange(v);
+            tried.push({ path: altPath, source: 'bundled-fallback', version: v, inRange, vendorDir: alt });
+            if (inRange) {
+                return { path: altPath, source: 'bundled-fallback', version: v, inRange: true, vendorDir: alt, tried };
             }
         }
     }
@@ -350,4 +437,9 @@ module.exports = {
     SUPPORTED_PYTHON,
     parsePythonVersionString,
     isPythonInSupportedRange,
+    // dev60 — vendored-Python picker (exported so main.js can pass
+    // RESOLVE_SCRIPT_LIB at startup AND so tests can exercise the
+    // import-string heuristic against fixture .dll buffers).
+    pickVendoredPythonDir,
+    clearVendoredPythonCache,
 };

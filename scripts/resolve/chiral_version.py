@@ -14,16 +14,28 @@
 #     mark validation, dialog wording).
 #   * Don't bump for pure-comment / log-string edits.
 
-SCRIPT_VERSION = "0.5.0-dev13"
+SCRIPT_VERSION = "0.5.0-dev14"
 SCRIPT_NAME    = "Chiral Network — Resolve scripts"
 
-# Supported Python range. dev48: a tester on Resolve 20 hit
-# "ImportError: DLL load failed while importing fusionscript" with
-# our previously vendored CPython 3.13 — Resolve's fusionscript native
-# module is built against the CPython 3.10 ABI on Windows (the only
-# Python version Blackmagic officially supports for Resolve scripting),
-# so loading it from any other minor version blows up with a misleading
-# "module could not be found" message. Vendored interpreter is now
-# 3.10.11; this guard rejects anything outside that.
+# Supported Python range. dev60 — re-widened from (3,10)..(3,10) to
+# (3,10)..(3,13) after confirming that Resolve 21's fusionscript.dll
+# is built against the limited / stable ABI for Python 3.11+, while
+# pre-Resolve-21 fusionscript directly links `python310.dll`. We now
+# ship two embeddables under resources/vendor/python310 and
+# resources/vendor/python313; the Electron side reads fusionscript's
+# import strings at spawn time and routes the relink to whichever
+# vendored interpreter matches. From the script's POV either is fine
+# — this guard just warns when something *outside* the shipping pair
+# is invoked (e.g. a developer running with system Python 3.14).
+#
+# History:
+#   dev48: tightened to (3,10) after Virak (Resolve <21) hit
+#          "ImportError: DLL load failed while importing fusionscript"
+#          on the previously vendored 3.13 — fusionscript on his
+#          machine wanted the 3.10 ABI specifically.
+#   dev60: re-widened. Resolve 21's stable-ABI fusionscript ACCESS-
+#          VIOLATES inside PyInit_fusionscript when called from 3.10
+#          — opposite failure mode of dev48. Two shipping versions,
+#          one heuristic picker.
 PY_MIN = (3, 10)
-PY_MAX = (3, 10)
+PY_MAX = (3, 13)

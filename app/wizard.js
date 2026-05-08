@@ -142,10 +142,15 @@ async function runDetect() {
     }
 
     // Python (registry) — Resolve discovers Python via the Windows registry,
-    // not via PATH and not via our vendored embeddable. The vendored 3.10.11
-    // under resources/vendor/python/ runs the relink/export scripts itself
-    // (spawned from main.js); the registry check here is purely about whether
-    // Resolve will surface "Workspace → Scripts → Utility → Chiral Network".
+    // not via PATH and not via our vendored embeddables. The vendored
+    // 3.10.11 + 3.13.1 under resources/vendor/python310/ and python313/
+    // (dev60 — split because Resolve 21's fusionscript is built against a
+    // post-3.10 stable ABI while pre-21 fusionscript directly links
+    // python310.dll; the picker reads fusionscript.dll's import table at
+    // spawn time and routes the relink to the matching interpreter)
+    // run the relink/export scripts themselves (spawned from main.js);
+    // the registry check here is purely about whether Resolve will surface
+    // "Workspace → Scripts → Utility → Chiral Network".
     state.pythonRegistered = !!(r.pythonRegistry && r.pythonRegistry.found);
     if (state.pythonRegistered) {
         const v = r.pythonRegistry.version ? ('v' + r.pythonRegistry.version) : '';
@@ -153,7 +158,7 @@ async function runDetect() {
                `Registered for Resolve (${r.pythonRegistry.hive} ${v})`.trim());
     } else {
         setRow('detect-list', 'python', 'warn',
-               'Vendored 3.10.11 ready — register to expose Resolve scripts');
+               'Vendored 3.10 + 3.13 ready — register to expose Resolve scripts');
     }
 }
 

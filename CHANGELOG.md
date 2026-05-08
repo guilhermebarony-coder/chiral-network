@@ -13,6 +13,174 @@ bumps may break disk format).
 
 ---
 
+## [0.5.0-dev60] — 2026-05-08 — **🎯 Resolve 21 relink fix: dual Python vendor + ABI-aware picker**
+
+dev57's `faulthandler` instrumentation caught the C-level abort we'd
+been chasing since dev49. On Guilherme's Resolve 21 install:
+
+```
+Windows fatal exception: access violation
+  File "DaVinciResolveScript.py", line 15 in load_dynamic
+  File "<frozen importlib._bootstrap_external>", line 1176 in create_module
+```
+
+So the crash was inside `PyInit_fusionscript`, exactly where dev55's
+ctypes preload survived but importlib's `create_module` did not.
+
+### Diagnosis
+
+A side-by-side import probe across three Python versions on the same
+machine, against the same fusionscript.dll, gave:
+
+| Python    | Layout    | Result                |
+|-----------|-----------|-----------------------|
+| 3.10.11   | embeddable| 💥 access violation    |
+| 3.10.11   | full inst | 💥 access violation    |
+| 3.13.12   | full inst | ✅ imports clean       |
+
+Embeddable-vs-full was eliminated as a variable. The minor version is
+the actual variable.
+
+Reading `fusionscript.dll`'s import table:
+
+```
+python27.dll
+python3.dll        ← stable / limited ABI forwarder
+```
+
+No `python310.dll`, no `python313.dll`. Resolve 21's fusionscript is
+compiled against the **limited (stable) ABI** through `python3.dll`,
+which is forward-compatible from the build target onwards. Empirically
+the build target is **Python 3.11+** — calling into it from 3.10
+dereferences fields that don't exist in 3.10's `PyTypeObject` layout
+and access-violates immediately.
+
+dev48 fixed Virak's pre-Resolve-21 case (his fusionscript directly
+linked `python310.dll`, so 3.13 failed there with "DLL load failed").
+dev48 was right for that machine — but it broke Resolve 21 testers
+once Resolve 21 entered beta. Two Resolve generations, two ABI
+requirements, no single Python version that satisfies both.
+
+### Fix: ship both, pick at spawn time
+
+#### `vendor/` reshape
+
+- `vendor/python/`       → `vendor/python310/` (CPython 3.10.11 embed,
+                          for fusionscript that directly links
+                          `python310.dll`).
+- `vendor/python313/`    new — CPython 3.13.1 embed (for stable-ABI
+                          fusionscript; covers Resolve 21+).
+
+Both `_pth` files have `import site` enabled (carry-forward of dev56's
+fix; site init is required for fusionscript's PyInit to find the
+runtime state it expects).
+
+#### `app/lib/detect.js` — `pickVendoredPythonDir(libPath)`
+
+Reads up to 4 MB at the head of `fusionscript.dll` (PE import tables
+are at the front; cost is bounded regardless of file size) and scans
+the buffer as latin-1:
+
+| Match                       | Pick        |
+|-----------------------------|-------------|
+| `python310.dll` literal     | `python310` |
+| `python311..319.dll` literal| `python313` |
+| only `python3.dll` (or none)| `python313` |
+
+Default is `python313` whenever the file is missing or unreadable —
+newer Resolve is the population we expect to grow, and the 3.10
+vendor is now the legacy escape hatch. Result is cached per
+absolute libPath in-process so repeated relinks don't re-read the
+.dll.
+
+#### `app/lib/detect.js` — `detectPython(appRoot, libPath)`
+
+Threaded `libPath` through. Picks the matching vendor dir; falls
+back to the OTHER one if the chosen dir is missing (manual deletion,
+half-extracted vendor.zip). Both fallbacks log to `tried[]` for
+diagnostics.
+
+#### `app/main.js` — `resolvePythonPath()`
+
+Now passes `RESOLVE_SCRIPT_LIB` into `detect.detectPython`. The
+existing env-override path is unchanged (user-set `PYTHON_EXE`
+trumps everything).
+
+#### `app/main.js` — `checkRuntimeFallbacks()`
+
+Treats EITHER `vendor/python310/python.exe` OR
+`vendor/python313/python.exe` as "Python is vendored". The picker
+will choose between them; we only need to know that *some* runtime
+is on disk for the "Python missing" toast not to fire.
+
+#### `chiral_version.py`
+
+`PY_MIN, PY_MAX` re-widened from `(3,10)..(3,10)` to `(3,10)..(3,13)`
+— the script itself is happy with either; the gate's job is to warn
+when a developer runs it with system Python 3.14.
+
+`SCRIPT_VERSION` → `0.5.0-dev14`.
+
+### Tests
+
+Six new tests in `test/python_version.test.js` exercising the
+heuristic against synthetic fixture .dlls (real fusionscript can't
+be checked in — license + size). Coverage:
+
+- `python310.dll` literal → `python310`
+- only `python3.dll` → `python313`
+- `python311.dll` / `python312.dll` lock → `python313`
+- missing / null / empty path → `python313` default
+- result caches by absolute path; cache survives file mutation
+- match is case-insensitive
+
+Total: 155/155 passing (was 149).
+
+### Verified end-to-end on the user's machine
+
+```
+Real fusionscript.dll picks: python313
+Null picks:                  python313
+Bogus path picks:            python313
+```
+
+And the import probe with the new `vendor/python313/python.exe`:
+
+```
+ctypes preload OK: handle=0x7ff96d170000
+About to: import DaVinciResolveScript
+IMPORT OK
+PROBE END (clean exit)
+```
+
+### Files touched
+
+- `vendor/python/` → `vendor/python310/` (rename)
+- `vendor/python313/` (new — CPython 3.13.1 embed + `_pth` w/ `import site`)
+- `app/lib/detect.js`
+- `app/main.js` — `resolvePythonPath()`, `checkRuntimeFallbacks()`
+- `app/wizard.js` — comment + status-row text
+- `app/test/python_version.test.js` — six new picker tests
+- `scripts/resolve/chiral_version.py` — `PY_MAX` 13, `SCRIPT_VERSION` dev14
+- `app/package.json` — `0.5.0-dev60`
+
+### What this means for testers
+
+- **Resolve 21**: relinks now work out of the box (the picker chooses
+  3.13).
+- **Resolve <21**: relinks continue to work (the picker chooses 3.10).
+- **Build size**: vendor.zip grows by ~12 MB (the 3.13 embeddable);
+  packaged dir grows similarly. Acceptable cost for a no-config
+  relink across Resolve majors.
+- **vendor.zip distribution**: the GitHub Releases vendor.zip needs
+  to be re-uploaded to include `vendor/python313/`. Source-checkout
+  testers running from an old vendor.zip will pick `python313` and
+  hit "vendor/python313/python.exe missing" — falls back to the 3.10
+  dir, surfaces a clean error if it's also wrong. Documented in the
+  README's vendor section.
+
+---
+
 ## [0.5.0-dev59] — 2026-05-07 — **Vault default size + filename-tag mirrors to shot label**
 
 Two QoL nudges while we wait on tester feedback for the dev57 relink

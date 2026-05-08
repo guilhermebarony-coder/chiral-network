@@ -12,7 +12,13 @@ const {
     parsePythonVersionString,
     isPythonInSupportedRange,
     SUPPORTED_PYTHON,
+    pickVendoredPythonDir,
+    clearVendoredPythonCache,
 } = require('../lib/detect');
+
+const fs   = require('node:fs');
+const os   = require('node:os');
+const path = require('node:path');
 
 test('parsePythonVersionString: typical --version outputs', () => {
     assert.deepEqual(
@@ -63,4 +69,81 @@ test('parse + range: realistic end-to-end flow', () => {
     const bad = parsePythonVersionString('Python 3.14.0');
     assert.equal(isPythonInSupportedRange(ok),  true);
     assert.equal(isPythonInSupportedRange(bad), false);
+});
+
+// dev60 — vendored-Python picker.
+//
+// We can't ship a real fusionscript.dll fixture (Blackmagic license, plus
+// it's huge), but the picker's signal is purely "does this binary buffer
+// contain the literal string `python310.dll` / `python3XX.dll` / nothing".
+// So the test fixtures are synthetic .dll-named files containing the
+// relevant string at a deterministic offset. The heuristic doesn't care
+// about valid PE structure; it scans the head as latin-1.
+function _makeFakeDll(contents) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chiral-vendor-pick-'));
+    const dll = path.join(dir, 'fusionscript.dll');
+    fs.writeFileSync(dll, contents);
+    return { dir, dll };
+}
+function _cleanup(t) {
+    try { fs.rmSync(t.dir, { recursive: true, force: true }); } catch (_) {}
+}
+
+test('pickVendoredPythonDir: python310.dll literal -> python310', () => {
+    clearVendoredPythonCache();
+    const t = _makeFakeDll('MZ...lots of bytes...python310.dll...rest of binary');
+    try {
+        assert.equal(pickVendoredPythonDir(t.dll), 'python310');
+    } finally { _cleanup(t); }
+});
+
+test('pickVendoredPythonDir: only python3.dll forwarder -> python313', () => {
+    clearVendoredPythonCache();
+    const t = _makeFakeDll('MZ...stable abi only...python3.dll...rest of binary');
+    try {
+        assert.equal(pickVendoredPythonDir(t.dll), 'python313');
+    } finally { _cleanup(t); }
+});
+
+test('pickVendoredPythonDir: explicit python311+ lock -> python313', () => {
+    clearVendoredPythonCache();
+    const t = _makeFakeDll('MZ...python311.dll...');
+    try {
+        assert.equal(pickVendoredPythonDir(t.dll), 'python313');
+    } finally { _cleanup(t); }
+    clearVendoredPythonCache();
+    const t2 = _makeFakeDll('MZ...python312.dll...');
+    try {
+        assert.equal(pickVendoredPythonDir(t2.dll), 'python313');
+    } finally { _cleanup(t2); }
+});
+
+test('pickVendoredPythonDir: missing file / null path -> python313 default', () => {
+    clearVendoredPythonCache();
+    assert.equal(pickVendoredPythonDir(null),                'python313');
+    assert.equal(pickVendoredPythonDir(''),                  'python313');
+    assert.equal(pickVendoredPythonDir('Z:/no/such/file.dll'), 'python313');
+});
+
+test('pickVendoredPythonDir: result is cached per absolute path', () => {
+    clearVendoredPythonCache();
+    const t = _makeFakeDll('python310.dll fixture');
+    try {
+        assert.equal(pickVendoredPythonDir(t.dll), 'python310');
+        // Mutate the file — second call should still return the cached
+        // value because we cache by absolute path. Avoids re-reading the
+        // ~MB of fusionscript.dll on every relink spawn.
+        fs.writeFileSync(t.dll, 'no python lock string at all');
+        assert.equal(pickVendoredPythonDir(t.dll), 'python310');
+        clearVendoredPythonCache();
+        assert.equal(pickVendoredPythonDir(t.dll), 'python313');
+    } finally { _cleanup(t); }
+});
+
+test('pickVendoredPythonDir: case-insensitive match', () => {
+    clearVendoredPythonCache();
+    const t = _makeFakeDll('PYTHON310.DLL appears in ALL CAPS in some PE tables');
+    try {
+        assert.equal(pickVendoredPythonDir(t.dll), 'python310');
+    } finally { _cleanup(t); }
 });
