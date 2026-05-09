@@ -238,3 +238,75 @@ test('pickVendoredPythonDir: no version info, no python lock -> python313 defaul
         assert.equal(pickVendoredPythonDir(t.dll), 'python313');
     } finally { _cleanup(t); }
 });
+
+// dev64 — false-positive resilience. The VS_FIXEDFILEINFO signature
+// 0xFEEF04BD is only 4 bytes and DOES occur as garbage data inside
+// real fusionscript builds (Guilherme's Resolve 21 fusionscript has a
+// false hit at offset 898009 whose major-version field reads as 3137).
+// dev63's picker took the first hit without validating struct shape,
+// so Seih's Resolve 20.3 was misrouted to python313 because his
+// fusionscript's first signature hit happened to read as a >=21 major
+// (or garbage outside the <21 condition).
+//
+// The fix validates each candidate match: real VS_FIXEDFILEINFO has
+// dwStrucVersion HIWORD == 1, and reasonable majors are 1..99. Test
+// it by prepending a bogus signature with junk dwStrucVersion before
+// the real one.
+test('pickVendoredPythonDir: skips false-positive signature, finds real one', () => {
+    clearVendoredPythonCache();
+    // Bogus block: signature + bad dwStrucVersion + arbitrary FileVersionMS
+    // (would parse as major=3137 if dev63's naive picker reached it).
+    const bogus = Buffer.alloc(16);
+    bogus.writeUInt32LE(0xFEEF04BD, 0);
+    bogus.writeUInt32LE(0x0c418b08, 4);   // dwStrucVersion HIWORD == 0x0c41, not 1
+    bogus.writeUInt32LE(0x0c410001, 8);   // garbage major
+    bogus.writeUInt32LE(0x20e3c148, 12);
+    // Real block: well-formed for major=20 (Resolve 20).
+    const real = Buffer.alloc(16);
+    real.writeUInt32LE(0xFEEF04BD, 0);
+    real.writeUInt32LE(0x00010000, 4);    // dwStrucVersion = 1.0
+    real.writeUInt32LE((20 << 16) | 3, 8); // major=20, minor=3 (Resolve 20.3)
+    real.writeUInt32LE(0, 12);
+    const blob = Buffer.concat([
+        Buffer.from('MZ...prelude...python3.dll...'),
+        bogus,
+        Buffer.from('...filler bytes that are not the signature...'),
+        real,
+    ]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chiral-vendor-pick-fp-'));
+    const dll = path.join(dir, 'fusionscript.dll');
+    fs.writeFileSync(dll, blob);
+    try {
+        // Before dev64 this returned 'python313' because the bogus
+        // hit's HIWORD was 0x0c41 → reads as major 3137 → falls through
+        // the < 21 condition and keeps python313 default. After dev64,
+        // the bogus hit is skipped and the real Resolve-20 block is
+        // found, returning 'python310'.
+        assert.equal(pickVendoredPythonDir(dll), 'python310');
+    } finally {
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+});
+
+test('pickVendoredPythonDir: rejects insanely large major as false positive', () => {
+    // Even with a clean dwStrucVersion, an absurd major (e.g. 5000)
+    // is almost certainly a synthetic false positive from random
+    // PE-section bytes. Sanity bound rejects it.
+    clearVendoredPythonCache();
+    const blk = Buffer.alloc(16);
+    blk.writeUInt32LE(0xFEEF04BD, 0);
+    blk.writeUInt32LE(0x00010000, 4);    // looks valid
+    blk.writeUInt32LE((5000 << 16) | 0, 8); // major=5000, sanity reject
+    blk.writeUInt32LE(0, 12);
+    const blob = Buffer.concat([Buffer.from('MZ...python3.dll...'), blk]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chiral-vendor-pick-sanity-'));
+    const dll = path.join(dir, 'fusionscript.dll');
+    fs.writeFileSync(dll, blob);
+    try {
+        // No valid version found → falls through to python313 default
+        // (rather than misrouting on the bogus value).
+        assert.equal(pickVendoredPythonDir(dll), 'python313');
+    } finally {
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+});

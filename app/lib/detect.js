@@ -239,14 +239,39 @@ function _readMajorVersionFromBinary(absPath) {
             const buf = Buffer.alloc(len);
             fs.readSync(fd, buf, 0, len, 0);
             // VS_FIXEDFILEINFO signature: 0xFEEF04BD, little-endian on disk.
+            // dev64 — the 4-byte signature alone IS NOT unique; real
+            // fusionscript builds carry the byte sequence elsewhere in
+            // their PE sections (Guilherme's Resolve 21 fusionscript has
+            // a false-positive at offset 898009 whose major-version
+            // field reads as 3137). We have to validate the struct
+            // shape after each candidate match before trusting the
+            // version field. The discriminator is `dwStrucVersion`
+            // (offset +4 from signature): a real VS_FIXEDFILEINFO has
+            // dwStrucVersion's HIWORD == 1 (the struct's spec version
+            // is 1.x — has been since this resource shipped). Junk
+            // matches almost always have a garbage dwStrucVersion.
+            // Belt-and-braces: also reject majors > 99 as obvious
+            // false positives. Real product version majors that fit in
+            // a uint16 are ~always single- or double-digit.
             const SIG = Buffer.from([0xBD, 0x04, 0xEF, 0xFE]);
-            const idx = buf.indexOf(SIG);
-            if (idx < 0) return null;
-            // dwSignature(4) + dwStrucVersion(4) -> dwFileVersionMS(4) at +8.
-            // dwFileVersionMS layout: HIWORD = major, LOWORD = minor.
-            const ms = buf.readUInt32LE(idx + 8);
-            const major = (ms >>> 16) & 0xFFFF;
-            return major;
+            let i = 0;
+            while (i < buf.length) {
+                const idx = buf.indexOf(SIG, i);
+                if (idx < 0) break;
+                i = idx + 1;
+                // Need 16 bytes after `idx` for dwSignature + dwStrucVersion
+                // + dwFileVersionMS + dwFileVersionLS. Anything less is a
+                // truncated tail-of-buffer false hit.
+                if (idx + 16 > buf.length) continue;
+                const struc = buf.readUInt32LE(idx + 4);
+                const strucHi = (struc >>> 16) & 0xFFFF;
+                if (strucHi !== 1) continue;       // not a real VS_FIXEDFILEINFO
+                const ms = buf.readUInt32LE(idx + 8);
+                const major = (ms >>> 16) & 0xFFFF;
+                if (major === 0 || major > 99) continue; // sanity-bound
+                return major;
+            }
+            return null;
         } finally {
             try { fs.closeSync(fd); } catch (_) {}
         }

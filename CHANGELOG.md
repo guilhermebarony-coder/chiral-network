@@ -13,6 +13,89 @@ bumps may break disk format).
 
 ---
 
+## [0.5.0-dev64] — 2026-05-09 — **Picker: validate VS_FIXEDFILEINFO match (dev63 was misrouting)**
+
+dev63 didn't actually fix Seih. His dev63 log:
+
+```
+==== relink_latest_render START (Chiral Network scripts v0.5.0-dev17) ====
+Python 3.13.1 (...vendor\python313\python.exe)
+```
+
+Banner reads `dev17` (correct dev63 build), but `sys.executable`
+still says `python313` — the picker's new VS_FIXEDFILEINFO scan
+didn't route Resolve 20.3 to `python310` like it was supposed to.
+
+### Cause: 4-byte signature isn't unique
+
+Probing Guilherme's Resolve 21 fusionscript for `0xFEEF04BD`:
+
+```
+size: 3590104
+signature hits: [ 898009, 3509544 ]
+  at 898009  -> dwFileVersionMS=0xc418b08  major=3137  ← garbage / false positive
+  at 3509544 -> dwFileVersionMS=0x150000   major=21    ← real VS_FIXEDFILEINFO
+```
+
+The 4-byte signature is short enough to occur as random PE-section
+bytes elsewhere in fusionscript builds. dev63's picker took the
+**first** hit and trusted its `dwFileVersionMS` field. For the
+Resolve-21 case the bogus major=3137 fell through dev63's `< 21`
+condition and kept the python313 default (so Guilherme's machine
+silently still routed correctly — by luck). For Seih's Resolve 20.3,
+the bogus hit also bypassed `< 21`, so the picker missed his real
+major=20 in a later signature occurrence.
+
+dev63's tests passed because the synthetic fixtures contained only
+ONE signature occurrence each. They were testing the right behavior,
+just not the false-positive case.
+
+### Fix: validate the struct shape
+
+`_readMajorVersionFromBinary` now scans every match and validates
+each candidate's `dwStrucVersion` field (offset +4 from signature):
+real `VS_FIXEDFILEINFO` has `dwStrucVersion` HIWORD == 1 (the
+struct's spec version is 1.x — has been since this resource shipped
+in Windows). Junk matches almost always have a garbage
+`dwStrucVersion`. Belt-and-braces: also reject majors > 99 as
+obvious false positives — real product version majors that fit in a
+uint16 are always single- or double-digit.
+
+Verified on real fusionscript:
+
+```
+Real fusionscript (your Resolve 21): python313  ← unchanged, correct
+```
+
+### New tests
+
+- **False-positive resilience**: synthetic fixture with a bogus
+  signature + garbage `dwStrucVersion` BEFORE a well-formed Resolve
+  20 block. dev63's naive picker would have stopped at the bogus
+  hit; dev64 skips it and finds the real one → routes `python310`.
+- **Sanity-bound on major**: a synthetic block with a valid
+  `dwStrucVersion` but `major=5000` is rejected as a false positive,
+  falling through to the python313 default rather than misrouting.
+
+Total: **162/162** passing (was 160).
+
+### Files touched
+
+- `app/lib/detect.js` — `_readMajorVersionFromBinary` scans all
+  matches, validates `dwStrucVersion` HIWORD == 1, rejects insane
+  majors.
+- `app/test/python_version.test.js` — two new tests.
+- `scripts/resolve/chiral_version.py` — `SCRIPT_VERSION` dev18.
+- `app/package.json` — `0.5.0-dev64`.
+
+### What Seih should see in dev64
+
+Banner: `Chiral Network scripts v0.5.0-dev18`. `sys.executable: …\
+vendor\python310\python.exe` (NOT `python313`). Then the import
+should succeed.
+
+---
+
 ## [0.5.0-dev63] — 2026-05-08 — **Picker: Resolve-version fallback for stable-ABI fusionscript**
 
 dev62's CRT pre-load worked exactly as designed on every machine that
