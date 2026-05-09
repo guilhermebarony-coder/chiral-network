@@ -216,6 +216,45 @@ const SUPPORTED_PYTHON = Object.freeze({
 // fusionscript size. Result is cached per absolute libPath.
 const _vendoredPyCache = new Map();   // absLibPath -> 'python310' | 'python313'
 
+// dev63 — extract the major version of a Windows binary by scanning for
+// VS_FIXEDFILEINFO's signature (0xFEEF04BD) inside the resource section.
+// VS_FIXEDFILEINFO is a fixed-layout struct: { dwSignature, dwStrucVersion,
+// dwFileVersionMS, dwFileVersionLS, dwProductVersionMS, dwProductVersionLS,
+// ... }. dwFileVersionMS = (major << 16) | minor. We just want major, so
+// the first 6 bytes after the signature are enough. Returns an integer
+// or null on any parse failure.
+//
+// Why scan, not parse-the-resource-tree: the .rsrc directory layout is
+// genuinely fragile (nested IMAGE_RESOURCE_DIRECTORY entries, multiple
+// languages, etc.) and writing a robust parser is ~150 lines. The
+// signature is unique inside any valid VS_VERSIONINFO block, and PE
+// resources with VS_VERSIONINFO are rare enough that a buffer scan is
+// effectively zero-collision. We bound the scan to the first 8 MB which
+// is comfortably bigger than any fusionscript.dll we've seen.
+function _readMajorVersionFromBinary(absPath) {
+    try {
+        const fd = fs.openSync(absPath, 'r');
+        try {
+            const len = Math.min(8 * 1024 * 1024, fs.fstatSync(fd).size);
+            const buf = Buffer.alloc(len);
+            fs.readSync(fd, buf, 0, len, 0);
+            // VS_FIXEDFILEINFO signature: 0xFEEF04BD, little-endian on disk.
+            const SIG = Buffer.from([0xBD, 0x04, 0xEF, 0xFE]);
+            const idx = buf.indexOf(SIG);
+            if (idx < 0) return null;
+            // dwSignature(4) + dwStrucVersion(4) -> dwFileVersionMS(4) at +8.
+            // dwFileVersionMS layout: HIWORD = major, LOWORD = minor.
+            const ms = buf.readUInt32LE(idx + 8);
+            const major = (ms >>> 16) & 0xFFFF;
+            return major;
+        } finally {
+            try { fs.closeSync(fd); } catch (_) {}
+        }
+    } catch (_) {
+        return null;
+    }
+}
+
 function pickVendoredPythonDir(libPath) {
     if (!libPath) return 'python313';
     const abs = path.resolve(libPath);
@@ -241,8 +280,24 @@ function pickVendoredPythonDir(libPath) {
                 else if (/python31[1-9]\.dll/i.test(s)) {
                     pick = 'python313';
                 }
-                // Otherwise (only python3.dll forwarder, or no python*.dll
-                // string at all) we fall through to the 'python313' default.
+                // dev63 — Resolve <21 fallback. fusionscript imports only
+                // `python3.dll` (the stable-ABI forwarder), but stable-ABI
+                // claims and actual forward-compat behavior aren't the same
+                // thing. Resolve 20 fusionscript was compiled against Python
+                // 3.10 layout WITHOUT the strict `Py_LIMITED_API` discipline,
+                // so 3.13 access-violates inside PyInit_fusionscript on
+                // PyTypeObject field offsets that changed in 3.12+ (Seih's
+                // crash on dev62, Resolve 20.3). When the heuristic above
+                // didn't match a hard `pythonXY.dll` lock, fall back to
+                // reading fusionscript's own FileVersion: Resolve major < 21
+                // → python310, else python313 (the previous default).
+                else {
+                    const major = _readMajorVersionFromBinary(abs);
+                    if (typeof major === 'number' && major > 0 && major < 21) {
+                        pick = 'python310';
+                    }
+                    // major >= 21 OR null (parse failure) → keep python313.
+                }
             } finally {
                 try { fs.closeSync(fd); } catch (_) {}
             }

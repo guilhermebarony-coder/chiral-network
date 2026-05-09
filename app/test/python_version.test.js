@@ -147,3 +147,94 @@ test('pickVendoredPythonDir: case-insensitive match', () => {
         assert.equal(pickVendoredPythonDir(t.dll), 'python310');
     } finally { _cleanup(t); }
 });
+
+// dev63 — VS_FIXEDFILEINFO fallback. When fusionscript imports only the
+// stable-ABI forwarder `python3.dll` (no hard pythonXY.dll lock), the
+// picker reads fusionscript's own FileVersion and routes Resolve <21 to
+// python310 (because Resolve 20 was built against 3.10 ABI without the
+// strict Py_LIMITED_API discipline that would make stable-ABI forward-
+// compat actually safe). Test fixtures construct a synthetic binary
+// containing `python3.dll` and a VS_FIXEDFILEINFO block at a known
+// offset.
+function _makeFakeDllWithVersion(major, includeStableForwarder) {
+    // VS_FIXEDFILEINFO struct, hand-built:
+    //   dwSignature       = 0xFEEF04BD  (4 bytes, LE on disk: BD 04 EF FE)
+    //   dwStrucVersion    = 0x00010000  (4 bytes, version of the struct)
+    //   dwFileVersionMS   = (major << 16) | minor   (4 bytes)
+    //   dwFileVersionLS   = 0  (4 bytes)
+    //   dwProductVersionMS, LS, dwFileFlagsMask, dwFileFlags,
+    //   dwFileOS, dwFileType, dwFileSubtype, dwFileDateMS, LS — we
+    //   don't care about anything past dwFileVersionMS for this test.
+    const ffi = Buffer.alloc(52);
+    ffi.writeUInt32LE(0xFEEF04BD, 0);
+    ffi.writeUInt32LE(0x00010000, 4);
+    ffi.writeUInt32LE((major << 16) | 0, 8);
+    // Pad with a `python3.dll` reference so the import-string heuristic
+    // doesn't pick python310 / python311 first. Position the FFI block
+    // somewhere past the import strings.
+    const head = Buffer.from(
+        includeStableForwarder
+            ? 'MZ...prelude...python3.dll...filler...'
+            : 'MZ...prelude...nothing relevant...');
+    const blob = Buffer.concat([head, ffi]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chiral-vendor-pick-ver-'));
+    const dll = path.join(dir, 'fusionscript.dll');
+    fs.writeFileSync(dll, blob);
+    return { dir, dll };
+}
+
+test('pickVendoredPythonDir: stable forwarder + Resolve 20 -> python310', () => {
+    clearVendoredPythonCache();
+    const t = _makeFakeDllWithVersion(20, /* stable */ true);
+    try {
+        assert.equal(pickVendoredPythonDir(t.dll), 'python310');
+    } finally { _cleanup(t); }
+});
+
+test('pickVendoredPythonDir: stable forwarder + Resolve 19 -> python310', () => {
+    clearVendoredPythonCache();
+    const t = _makeFakeDllWithVersion(19, true);
+    try {
+        assert.equal(pickVendoredPythonDir(t.dll), 'python310');
+    } finally { _cleanup(t); }
+});
+
+test('pickVendoredPythonDir: stable forwarder + Resolve 21 -> python313', () => {
+    clearVendoredPythonCache();
+    const t = _makeFakeDllWithVersion(21, true);
+    try {
+        assert.equal(pickVendoredPythonDir(t.dll), 'python313');
+    } finally { _cleanup(t); }
+});
+
+test('pickVendoredPythonDir: explicit python310 lock beats version scan', () => {
+    // Even if the binary somehow has a major=21 VS_FIXEDFILEINFO AND
+    // a python310.dll literal (e.g. a Resolve 21 build that retained a
+    // legacy linkage), the explicit ABI lock wins. The version-fallback
+    // is a last resort, not an override.
+    clearVendoredPythonCache();
+    const ffi = Buffer.alloc(12);
+    ffi.writeUInt32LE(0xFEEF04BD, 0);
+    ffi.writeUInt32LE(0x00010000, 4);
+    ffi.writeUInt32LE((21 << 16) | 0, 8);
+    const blob = Buffer.concat([
+        Buffer.from('MZ...python310.dll...AND...python3.dll...'),
+        ffi,
+    ]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chiral-vendor-pick-mixed-'));
+    const dll = path.join(dir, 'fusionscript.dll');
+    fs.writeFileSync(dll, blob);
+    try {
+        assert.equal(pickVendoredPythonDir(dll), 'python310');
+    } finally {
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+    }
+});
+
+test('pickVendoredPythonDir: no version info, no python lock -> python313 default', () => {
+    clearVendoredPythonCache();
+    const t = _makeFakeDll('MZ...completely unrelated binary content...');
+    try {
+        assert.equal(pickVendoredPythonDir(t.dll), 'python313');
+    } finally { _cleanup(t); }
+});

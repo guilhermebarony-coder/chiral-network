@@ -13,6 +13,104 @@ bumps may break disk format).
 
 ---
 
+## [0.5.0-dev63] — 2026-05-08 — **Picker: Resolve-version fallback for stable-ABI fusionscript**
+
+dev62's CRT pre-load worked exactly as designed on every machine that
+ran it — Seih's `relink.log` (Resolve 20.3) shows clean System32 CRTs,
+no Resolve-bundled `VCRUNTIME140_1.dll` or `MSVCP140.dll` in the
+loaded modules. **And he still crashed in `PyInit_fusionscript`.**
+
+Cause: dev60's picker matched fusionscript's import strings only:
+
+| signal                              | dev60 pick |
+|-------------------------------------|------------|
+| `python310.dll` literal             | python310  |
+| `python311+.dll` literal            | python313  |
+| only `python3.dll` (stable forwarder)| **python313** ← wrong for Resolve 20 |
+| nothing                             | python313  |
+
+Stable-ABI claims and actual forward-compat behavior aren't the same
+thing. **Resolve 20** fusionscript was compiled against Python 3.10's
+layout WITHOUT the strict `Py_LIMITED_API` discipline. It links
+through `python3.dll` (no hard `python310.dll` lock in the import
+table), but dereferences `PyTypeObject` and other struct fields whose
+layouts changed in Python 3.12+ (the no-GIL preparation ABI break).
+3.13 calling into Resolve 20's PyInit corrupts CRT state → access
+violation in `create_module`.
+
+dev48 originally vendored 3.10 because Virak's pre-21 Resolve crashed
+on 3.13. dev60 split the vendor so Resolve 21 could get 3.13. The
+picker correctly routed Resolve 21 (Guilherme, rafag), but
+mis-routed Resolve 20 (Seih) because there was no signal in
+fusionscript's import table to distinguish.
+
+### Fix: read fusionscript's FileVersion as a fallback
+
+When the import-string heuristic doesn't find an explicit
+`pythonXY.dll` lock, the picker now reads fusionscript.dll's own
+`VS_FIXEDFILEINFO` (the embedded version block) and routes by
+**Resolve major version**:
+
+| signal                              | dev63 pick |
+|-------------------------------------|------------|
+| `python310.dll` literal             | python310  |
+| `python311+.dll` literal            | python313  |
+| stable forwarder + Resolve <21      | **python310** |
+| stable forwarder + Resolve 21+      | python313  |
+| nothing / parse failure             | python313 (default) |
+
+Implementation (`app/lib/detect.js` `_readMajorVersionFromBinary`):
+scans the binary for the `VS_FIXEDFILEINFO` signature `0xFEEF04BD`
+(little-endian on disk). The struct has a fixed layout — 8 bytes
+after the signature is `dwFileVersionMS`, whose high word is the
+major version. Bounded scan over the first 8 MB, signature is
+unique enough inside any valid VS_VERSIONINFO block that we don't
+need a full PE resource-tree parser.
+
+The explicit `pythonXY.dll` literal still takes precedence — the
+version fallback is a last resort, not an override (covered by a
+specific test).
+
+### Verified
+
+- Real fusionscript on Guilherme's machine (Resolve 21.0.0.28):
+  picks `python313` — unchanged.
+- Synthetic fixture for Resolve 20 stable-ABI fusionscript:
+  picks `python310` (new behavior; would have routed Seih correctly
+  in dev62).
+- Synthetic fixture for Resolve 19: picks `python310`.
+- Synthetic fixture with Resolve 21 + stable forwarder: picks
+  `python313` — still works without a hard ABI lock.
+- Mixed fixture (Resolve 21 with `python310.dll` literal):
+  picks `python310` — explicit lock wins, version is fallback.
+
+### Tests
+
+Five new tests in `python_version.test.js` covering each branch of
+the version fallback. Total: **160/160** passing (was 155).
+
+### Files touched
+
+- `app/lib/detect.js` — `_readMajorVersionFromBinary()` helper +
+  fallback branch in `pickVendoredPythonDir`.
+- `app/test/python_version.test.js` — five new tests.
+- `scripts/resolve/chiral_version.py` — `SCRIPT_VERSION` dev17.
+- `app/package.json` — `0.5.0-dev63`.
+
+### Recap
+
+Six-dev arc closing in on the relink:
+
+| Dev | Step                                         | What it bought us |
+|-----|----------------------------------------------|-------------------|
+| 57  | `faulthandler.enable()`                      | Captured the C-frame |
+| 60  | Dual Python vendor + import-string picker    | Eliminated 3.10/3.13 confusion for **explicit** ABI locks |
+| 61  | `chiral_diag` PE+modules+VC+AV capture       | Surfaced the dual-CRT cause from rafag's first run |
+| 62  | System32 CRT pre-load                        | Fixed the dual-CRT crash (rafag, possibly Levi) |
+| **63** | **VS_FIXEDFILEINFO version fallback**     | **Fixes Seih on Resolve 20.3 — stable-forwarder fusionscript without explicit ABI lock now routes by Resolve major version** |
+
+---
+
 ## [0.5.0-dev62] — 2026-05-08 — **🎯 The actual fix: System32 CRT pre-load eliminates dual-load AV**
 
 dev61's `chiral_diag.dump_loaded_modules` captured the cause from
