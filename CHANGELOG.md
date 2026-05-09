@@ -13,6 +13,117 @@ bumps may break disk format).
 
 ---
 
+## [0.5.0-dev61] — 2026-05-08 — **`chiral_diag` — pre-import environmental capture**
+
+dev60 unblocked Guilherme's machine (Resolve 21, picker chose 3.13)
+but **three testers — rafag, Levi, Seih — still hit the same access
+violation** inside `PyInit_fusionscript` on dev60, across both 3.10
+and 3.13 vendor paths, regardless of OneDrive vs Desktop install
+location, regardless of whether the modern VC++ runtime is
+installed (Seih confirmed v14.50 redist already present). The crash
+signature is identical on every machine:
+
+```
+Windows fatal exception: access violation
+  File "DaVinciResolveScript.py", line 15 in load_dynamic
+  File "<frozen importlib._bootstrap_external>", line 1320 in create_module
+```
+
+We now have:
+- dev57's faulthandler → captures the **C-frame** at crash time
+- dev60's picker → confirms WHICH Python is being routed in
+- dev61's `chiral_diag` → captures the **environment** the crash is
+  happening in (per-tester, no manual commands required)
+
+Together those three pieces let us identify the responsible DLL or
+process state without further hypothesis-by-correspondence.
+
+### `scripts/resolve/chiral_diag.py` (new, ~310 lines)
+
+Five probes, each in its own `try/except` so a probe failure can never
+block the relink. Output bracketed by `==== chiral_diag start ====` /
+`==== chiral_diag end ====` markers in `relink.log`.
+
+1. **`dump_fusionscript_imports(lib_path)`** — hand-rolled PE parser
+   walks fusionscript.dll's import directory and logs every DLL it
+   imports. (Stdlib has no PE parser; we can't add `pefile` to the
+   embeddable.) Falls back to a regex `.dll`-string scan of the head
+   if PE parsing fails. On Guilherme's Resolve 21 the parser found
+   33 imports including `tbbmalloc.dll`, `lua5.1.dll`,
+   `vcruntime140_1.dll`, `msvcp140.dll`, `imagehlp.dll`, plus the
+   universal CRT `api-ms-win-crt-*` family.
+
+2. **`dump_vc_runtime()`** — for each modern VC++ runtime DLL fusion
+   may transitively need (`vcruntime140`, `vcruntime140_1`,
+   `msvcp140`, `msvcp140_1/2`, `concrt140`, `vcomp140`), probes both
+   `C:\Windows\System32\` and the embeddable's bundled copy, logs
+   FileVersion via `VerQueryValueW`. **Initial finding on
+   Guilherme's box**: System32 has v14.50.35719.0, embeddable bundles
+   v14.42.34226.3 — different versions of the same DLLs are loaded
+   via the loader's first-loaded-wins rule. Worth knowing per
+   tester.
+
+3. **`dump_loaded_modules()`** — `EnumProcessModulesEx` via ctypes
+   lists every DLL currently loaded into our `python.exe` process at
+   the moment of attempted import. Includes load base + image size,
+   so two copies of the same DLL at different addresses become
+   visible. This will tell us, for each crashing tester:
+   - Which `vcruntime140.dll` actually got loaded (embeddable's
+     14.42 vs System32's 14.50)
+   - Whether AV / shell extensions injected anything ahead of
+     fusionscript
+   - Whether an old fusionscript or python3.dll from a prior Resolve
+     install is being picked up
+
+4. **`dump_resolve_process()`** — `tasklist /FI IMAGENAME=Resolve.exe`
+   confirms Resolve is actually running. fusionscript's PyInit is
+   hypothesised to attach to a Resolve IPC channel; if Resolve isn't
+   up, the attach can fault before `scriptapp()` is ever called.
+
+5. **`dump_antivirus()`** — `Get-CimInstance` against
+   `root\SecurityCenter2 \ AntiVirusProduct` enumerates every
+   registered AV (Defender, Avast, McAfee, etc.) with its
+   `productState` flags. Doesn't change behavior — just tells us
+   which AV is sitting in the loader path when the crash signature
+   suggests injected DLLs.
+
+### Wiring
+
+`relink_latest_render.py` calls `chiral_diag.run_all(lib, log)`
+immediately before the `import DaVinciResolveScript` line, in a
+`try/except` that catches and logs any diag failure. Diag runs AFTER
+dev55's `ctypes.LoadLibraryEx` preload, so the loaded-modules dump
+will include fusionscript itself plus everything it pulled in
+transitively — that's the most diagnostic state to capture.
+
+### No JS-side changes
+
+dev60's picker is unchanged. Tests stay green at 155/155. No new
+electron code, no new IPC handlers, no new vendor folders. Pure
+Python-side instrumentation.
+
+### Versions
+
+- `SCRIPT_VERSION` → `0.5.0-dev15`
+- `app/package.json` → `0.5.0-dev61`
+
+### What to ask testers after dev61 lands
+
+Just send the `relink.log`. The new `==== chiral_diag start ====`
+block in their log answers most of the open questions in one shot —
+whether their fusionscript.dll's PE imports differ from
+Guilherme's, which CRT version actually loaded, whether Resolve was
+running, what AV is active.
+
+### Files touched
+
+- `scripts/resolve/chiral_diag.py` (new)
+- `scripts/resolve/relink_latest_render.py` — wires `chiral_diag.run_all()`
+- `scripts/resolve/chiral_version.py` — `SCRIPT_VERSION` dev15
+- `app/package.json` — `0.5.0-dev61`
+
+---
+
 ## [0.5.0-dev60] — 2026-05-08 — **🎯 Resolve 21 relink fix: dual Python vendor + ABI-aware picker**
 
 dev57's `faulthandler` instrumentation caught the C-level abort we'd

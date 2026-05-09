@@ -349,6 +349,21 @@ def get_resolve():
         except Exception as e:
             log("ctypes preload exception (non-fatal): " + str(e))
 
+    # dev61 — pre-import diagnostics. dev57's faulthandler captured the
+    # C-frame of the access violation inside fusionscript's PyInit
+    # (load_dynamic -> create_module). What we lacked until now was the
+    # *environment* the crash is happening in — which DLLs fusionscript
+    # actually wants, what's loaded into our python.exe at that instant,
+    # whether Resolve is even running, what AV is sitting in the loader
+    # path. chiral_diag.run_all() captures all of it before the import,
+    # writing to relink.log under the same `log` callable. Wrapped in a
+    # try/except so a probe failure can never block the relink.
+    try:
+        import chiral_diag
+        chiral_diag.run_all(lib, log)
+    except Exception as _diag_err:
+        log("chiral_diag failed: " + str(_diag_err))
+
     log("About to import DaVinciResolveScript...")
     try:
         import DaVinciResolveScript as dvr  # type: ignore
