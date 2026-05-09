@@ -13,6 +13,108 @@ bumps may break disk format).
 
 ---
 
+## [0.5.0-dev62] — 2026-05-08 — **🎯 The actual fix: System32 CRT pre-load eliminates dual-load AV**
+
+dev61's `chiral_diag.dump_loaded_modules` captured the cause from
+rafag's first run, in two adjacent lines of his `relink.log`:
+
+```
+[0x0000023e68a90000+0x00007000] C:\Program Files\Blackmagic Design\DaVinci Resolve\VCRUNTIME140_1.dll  ← 28 KB
+[0x00007ffd06670000+0x0000c000] C:\WINDOWS\system32\vcruntime140_1.dll                                 ← 48 KB
+```
+
+**Two copies of `vcruntime140_1.dll` mapped into the same `python.exe`
+process at different addresses, with different sizes.** Resolve ships
+its own stripped 28 KB build of `VCRUNTIME140_1.dll` in its install
+folder; System32 has the canonical 48 KB version. Both ended up
+loaded, putting the process into a mixed-CRT state — two sets of CRT
+globals (heap, locale, errno, exit-handler chains). When fusionscript's
+static initializers and `PyInit_fusionscript` walked CRT state, they
+hit corrupted/inconsistent fields and dereferenced into uninitialised
+memory. That's the access violation we'd been seeing in `create_module`
+since dev49.
+
+`MSVCP140.dll` showed the same pattern: loaded only from
+`C:\Program Files\Blackmagic Design\DaVinci Resolve\` with no System32
+backstop, picked up because of the search-path bias dev53/dev55
+introduced (`add_dll_directory(resolve_dir)` + `LOAD_WITH_ALTERED_SEARCH_PATH`)
+to find Resolve's bundled `tbbmalloc.dll` and `lua5.1.dll`.
+
+### The fix
+
+In `relink_latest_render.py`, **before** the ctypes preload of
+fusionscript.dll, explicitly `LoadLibrary` the System32 CRT DLLs by
+absolute path:
+
+- `vcruntime140.dll`
+- `vcruntime140_1.dll`
+- `msvcp140.dll`
+- `msvcp140_1.dll`
+- `msvcp140_2.dll`
+- `concrt140.dll`
+
+Once these are mapped into the python.exe process, the loader's
+short-name dedupe means any later `LoadLibrary("vcruntime140_1.dll")`
+— including the implicit binds from fusionscript's PE import table —
+returns the existing System32-backed handle. Resolve's bundled
+versions never get loaded.
+
+Handles are kept alive in a module-global list (`_CRT_KEEPALIVE`)
+because a Python `WinDLL` wrapper calls `FreeLibrary` on garbage
+collection, which would defeat the pre-load.
+
+`add_dll_directory(resolve_dir)` stays in place for fusionscript's
+Resolve-only deps (`tbbmalloc.dll`, `lua5.1.dll`) — those don't
+exist in System32, so the search-path bias is still needed to find
+them. We're only pre-empting the CRTs.
+
+### Verified end-to-end on Guilherme's machine
+
+Probe script preloads System32 CRTs, ctypes-preloads fusionscript,
+`import DaVinciResolveScript` succeeds, and the loaded-modules dump
+filtered to vcruntime/msvcp shows:
+
+```
+F:\…\vendor\python313\VCRUNTIME140.dll       ← embeddable's primary CRT (Python startup)
+C:\WINDOWS\System32\vcruntime140.dll         ← preloaded by dev62
+C:\WINDOWS\System32\vcruntime140_1.dll       ← preloaded by dev62
+C:\WINDOWS\System32\msvcp140.dll             ← preloaded by dev62
+C:\WINDOWS\System32\msvcp140_1.dll           ← preloaded by dev62
+C:\WINDOWS\System32\msvcp140_2.dll           ← preloaded by dev62
+```
+
+No `C:\Program Files\Blackmagic Design\DaVinci Resolve\VCRUNTIME140_1.dll`,
+no Resolve-bundled `MSVCP140.dll`. Single canonical CRT path for
+fusionscript's binds.
+
+### Why this didn't bite Guilherme on dev60/61
+
+His machine had a System32 v14.50.35719.0 vcruntime14X (very recent)
+which happened to be ABI-compatible with whatever Resolve's bundled
+copy expected; his loader race came out cleaner. rafag's System32 is
+v14.44.35211.0 — same ABI generation but enough field-layout drift
+within the v14.x line that a dual-load corrupts state.
+
+Either way, the dual-CRT condition was structurally wrong; we
+shouldn't be relying on which version race wins.
+
+### Files touched
+
+- `scripts/resolve/relink_latest_render.py` — `_CRT_KEEPALIVE` list at
+  module scope; CRT pre-load block in `get_resolve()` between
+  `add_dll_directory()` and the fusionscript ctypes preload.
+- `scripts/resolve/chiral_version.py` — `SCRIPT_VERSION` → dev16.
+- `app/package.json` — `0.5.0-dev62`.
+
+### Diagnostic instrumentation stays
+
+dev57's faulthandler, dev55's ctypes preload, dev61's `chiral_diag`
+all stay enabled. If a tester still crashes after dev62, we'll have
+the same depth of evidence as we just had for rafag — and a different
+loaded-modules table will name the next variable.
+
+---
+
 ## [0.5.0-dev61] — 2026-05-08 — **`chiral_diag` — pre-import environmental capture**
 
 dev60 unblocked Guilherme's machine (Resolve 21, picker chose 3.13)

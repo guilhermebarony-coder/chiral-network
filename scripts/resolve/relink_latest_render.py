@@ -138,6 +138,13 @@ def _resolve_log_path(name):
 LOG_PATH = _resolve_log_path("relink.log")
 FAULTHANDLER_PATH = _resolve_log_path("relink.faulthandler.log")
 
+# dev62 — keepalive list for the System32 CRT WinDLL handles we pre-load
+# in get_resolve(). Without a reference here, Python's GC would
+# finalize the WinDLL wrapper -> call FreeLibrary -> potentially unmap
+# the CRT before fusionscript's late-binding imports resolve. Module-
+# global list keeps them alive for the process's lifetime.
+_CRT_KEEPALIVE = []
+
 
 # dev57 — enable faulthandler. After dev55 confirmed `ctypes preload OK`
 # and dev56 enabled `import site` in the embeddable's _pth, rafag's log
@@ -298,6 +305,68 @@ def get_resolve():
             "(lib set={}, win32={}, has_attr={}).".format(
                 bool(lib), sys.platform == "win32",
                 hasattr(os, "add_dll_directory")))
+
+    # dev62 — System32 CRT pre-load. dev61's chiral_diag captured rafag's
+    # loaded-modules table at crash time and revealed the actual cause:
+    # fusionscript's PyInit ended up with TWO copies of vcruntime140_1.dll
+    # mapped into the same process — one from System32 (48 KB, full
+    # surface) and one from Resolve's install dir (28 KB, stripped).
+    # `MSVCP140.dll` showed the same pattern, loaded from Resolve's dir
+    # only with no System32 backstop. The dual / wrong-CRT state breaks
+    # C++ ABI assumptions in fusionscript's static initializers and
+    # PyInit_fusionscript dereferences corrupted CRT globals -> AV.
+    #
+    # Root mechanism: dev53's add_dll_directory(resolve_dir) plus dev55's
+    # LOAD_WITH_ALTERED_SEARCH_PATH bias the loader toward Resolve's dir
+    # for fusionscript's own dependencies. Resolve happens to bundle its
+    # own copies of the CRT DLLs in its install folder; those got
+    # picked up before System32's canonical copies.
+    #
+    # Fix: explicitly LoadLibrary the System32 CRT DLLs by absolute path
+    # FIRST, into the python.exe process. Once they're in, the loader's
+    # short-name dedupe means any later LoadLibrary("vcruntime140_1.dll")
+    # — including the implicit ones from fusionscript's import table —
+    # returns the existing System32-backed handle. Resolve's bundled
+    # versions never get loaded.
+    #
+    # tbbmalloc.dll and lua5.1.dll (Resolve-only deps fusionscript also
+    # imports) are unaffected: they're not in System32, so the
+    # add_dll_directory(resolve_dir) path still finds them in Resolve's
+    # install folder when fusionscript tries to bind them. We're only
+    # pre-loading the CRTs, not all of Resolve's deps.
+    if sys.platform == "win32":
+        try:
+            import ctypes as _c
+            sys32 = os.path.join(
+                os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+            crt_names = (
+                "vcruntime140.dll",
+                "vcruntime140_1.dll",
+                "msvcp140.dll",
+                "msvcp140_1.dll",
+                "msvcp140_2.dll",
+                "concrt140.dll",
+            )
+            log("CRT pre-load from " + sys32 + ":")
+            for n in crt_names:
+                full = os.path.join(sys32, n)
+                if not os.path.isfile(full):
+                    log("  skip {} (not present in System32)".format(n))
+                    continue
+                try:
+                    h = _c.WinDLL(full)
+                    log("  ok   {}".format(n))
+                    # Hold a reference on the WinDLL object via a module-
+                    # global list so Python doesn't GC it and trigger a
+                    # FreeLibrary before fusionscript binds. WinDLL's
+                    # FreeLibrary fires on object finalization; keeping
+                    # the references alive for the lifetime of the
+                    # process is the cheapest way to lock in our pre-load.
+                    _CRT_KEEPALIVE.append(h)
+                except OSError as e:
+                    log("  FAIL {} ({})".format(n, e))
+        except Exception as e:
+            log("CRT pre-load step crashed (non-fatal): " + str(e))
 
     # dev55 — ctypes pre-load diagnostic. The dev53/54 path got us as
     # far as "About to import DaVinciResolveScript..." on rafag's
