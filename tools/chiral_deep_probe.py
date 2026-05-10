@@ -413,35 +413,109 @@ def probe_python_registry():
 
 
 def probe_discoverable_pythons():
-    """Return a list of (label, path-to-python.exe) we can probe."""
+    """Return a list of (label, path-to-python.exe) we can probe.
+
+    v2 — Seih's first run only discovered the two Microsoft-Store python
+    stubs because his vendored Python was extracted standalone at
+    C:\\Users\\Seih\\Desktop\\vendor\\python313\\, NOT under a Chiral-Network
+    folder, so the chiral-roots walk missed it. And the driver Python
+    (sys.executable — what's actually invoking THIS probe) was never
+    tested at all. v2 fixes both: always test sys.executable first, walk
+    for vendor/python*/python.exe directly, and probe every Python
+    registered in the Windows registry."""
     section('8. DISCOVERABLE PYTHON INTERPRETERS')
     found = []
 
-    # Vendored embeddables — search common locations for a Chiral install.
-    chiral_roots = []
-    for base in (os.environ.get('USERPROFILE'), DESKTOP):
-        if not base: continue
-        for root, dirs, _ in os.walk(base):
-            depth = root[len(base):].count(os.sep)
-            if depth > 3:
-                dirs[:] = []   # cap recursion
-                continue
-            for d in list(dirs):
-                if d.lower().startswith('chiral-network'):
-                    chiral_roots.append(os.path.join(root, d))
-                    dirs.remove(d)   # stop recursing into it
-    chiral_roots = sorted(set(chiral_roots))
-    for cr in chiral_roots:
-        for sub in ('python310', 'python313', 'python'):
-            p = os.path.join(cr, 'resources', 'vendor', sub, 'python.exe')
-            if os.path.isfile(p):
-                found.append(('vendored ' + sub + ' (' + os.path.basename(cr) + ')', p))
-            # source-checkout layout
-            p2 = os.path.join(cr, 'vendor', sub, 'python.exe')
-            if os.path.isfile(p2):
-                found.append(('vendored ' + sub + ' (source)', p2))
+    # v2 (1) — ALWAYS test the driver Python first. If the probe ran at
+    # all, this interpreter is the most directly comparable to the
+    # vendored runtime our app would use; testing it first means we get
+    # the most important data point even if every other discovery
+    # branch fails.
+    if sys.executable and os.path.isfile(sys.executable):
+        found.append(('driver Python (sys.executable)', sys.executable))
 
-    # py launcher
+    # v2 (2) — walk a broader set of likely roots for `vendor/python*/
+    # python.exe` directly, not just nested under Chiral-Network folders.
+    # Testers sometimes unzip just the vendor dir, or rename the
+    # Chiral-Network folder, or extract to non-default locations.
+    bases = []
+    for b in (os.environ.get('USERPROFILE'), DESKTOP,
+              os.path.join(os.environ.get('USERPROFILE') or '', 'Downloads'),
+              os.path.join(os.environ.get('USERPROFILE') or '', 'Documents'),
+              'C:\\', 'D:\\', 'E:\\', 'F:\\', 'G:\\'):
+        if b and os.path.isdir(b) and b not in bases:
+            bases.append(b)
+    seen_vendor = set()
+    for base in bases:
+        try:
+            for root, dirs, files in os.walk(base):
+                depth = root[len(base):].count(os.sep)
+                if depth > 4:
+                    dirs[:] = []
+                    continue
+                # Skip obvious noise that bloats walk time.
+                dirs[:] = [d for d in dirs if not d.startswith('.')
+                           and d.lower() not in (
+                               'windows', '$recycle.bin', 'system volume information',
+                               'programdata', 'appdata',
+                               'program files', 'program files (x86)',
+                               '.git', 'node_modules', '__pycache__')]
+                if os.path.basename(root).lower().startswith('python') and \
+                   ('vendor' in root.lower()):
+                    py = os.path.join(root, 'python.exe')
+                    if os.path.isfile(py) and py.lower() not in seen_vendor:
+                        seen_vendor.add(py.lower())
+                        # Short label: parent of `vendor/` if present.
+                        rel = root.replace(base, '<base>')
+                        found.append(('vendored ' + os.path.basename(root) +
+                                     ' @ ' + root, py))
+        except Exception as e:
+            log('  walk of ' + base + ' failed: ' + str(e))
+
+    # v2 (3) — probe Pythons registered in the Windows registry. Seih's
+    # log surfaced Python 3.14 registered with no Python 3.10 — that's
+    # data we want to test directly because Resolve's fusionscript could
+    # be querying the registry.
+    try:
+        import winreg
+        for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+                try:
+                    k = winreg.OpenKey(
+                        hive, r'Software\Python\PythonCore', 0,
+                        winreg.KEY_READ | view)
+                except OSError:
+                    continue
+                try:
+                    i = 0
+                    while True:
+                        try:
+                            ver = winreg.EnumKey(k, i); i += 1
+                        except OSError:
+                            break
+                        try:
+                            sub = winreg.OpenKey(k, ver + r'\InstallPath')
+                            try:
+                                ip, _ = winreg.QueryValueEx(sub, '')
+                                exe = os.path.join(ip, 'python.exe')
+                                if os.path.isfile(exe):
+                                    hive_lbl = ('HKLM' if hive ==
+                                        winreg.HKEY_LOCAL_MACHINE else 'HKCU')
+                                    view_lbl = ('64' if view ==
+                                        winreg.KEY_WOW64_64KEY else '32')
+                                    found.append((
+                                        'registered ' + hive_lbl + ' ' + ver
+                                        + ' (' + view_lbl + '-bit view)', exe))
+                            finally:
+                                winreg.CloseKey(sub)
+                        except OSError:
+                            pass
+                finally:
+                    winreg.CloseKey(k)
+    except Exception as e:
+        log('  registry Python enumeration failed: ' + str(e))
+
+    # py launcher (v1 logic)
     py_launcher = r'C:\Windows\py.exe'
     if not os.path.isfile(py_launcher):
         for d in os.environ.get('PATH', '').split(os.pathsep):
@@ -472,14 +546,14 @@ def probe_discoverable_pythons():
             if os.path.isfile(p):
                 found.append(('PATH ' + name + ' (' + d + ')', p))
 
-    # Dedupe by path
+    # Dedupe by path — case-insensitive because Windows.
     seen = set()
     uniq = []
     for label, p in found:
-        ap = os.path.abspath(p)
+        ap = os.path.abspath(p).lower()
         if ap in seen: continue
         seen.add(ap)
-        uniq.append((label, ap))
+        uniq.append((label, os.path.abspath(p)))
 
     log('')
     log('  found {} interpreters:'.format(len(uniq)))
