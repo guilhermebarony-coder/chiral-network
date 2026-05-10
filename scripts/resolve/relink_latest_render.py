@@ -89,8 +89,22 @@ def _parse_timecode_to_frame(tc, fps):
 
 
 def _playhead_frame(timeline, fps):
-    """Best-effort: return the current playhead as an absolute frame on the
-    timeline. Returns None if Resolve refuses to report a timecode."""
+    """Return the current playhead as a TIMELINE-RELATIVE frame (0 = first
+    frame of the timeline regardless of timecode start offset). Returns
+    None if Resolve refuses to report a timecode.
+
+    dev66 — was returning absolute frame, with a comment claiming
+    AppendToTimeline expects absolute. That was wrong. AppendToTimeline's
+    `recordFrame` is timeline-relative (matches every Blackmagic SDK
+    example + the conversion `export_range.py` already does for `markIn`
+    via `fi_rel = fi_abs - start`). The mismatch caused Faah's AE-first
+    relink to land the inserted clip at absolute frame 86400 (= 01:00:00:00
+    in TC = 1 hour past the start of a relative-frame-0 timeline), which
+    is visible to the API (AppendToTimeline returned a valid handle and
+    we successfully colored it) but completely off the human-visible
+    portion of the timeline. With the subtraction below, the playhead
+    path now passes the right relative frame and the clip lands where
+    the user expects."""
     try:
         tc = timeline.GetCurrentTimecode()
     except Exception:
@@ -98,10 +112,11 @@ def _playhead_frame(timeline, fps):
     frame = _parse_timecode_to_frame(tc, fps) if tc else None
     if frame is None:
         return None
-    # Resolve timecodes are absolute (they include GetStartFrame offset), so
-    # we don't subtract anything — AppendToTimeline also expects an absolute
-    # recordFrame. Keep this comment honest if Resolve ever changes behavior.
-    return frame
+    try:
+        start = int(timeline.GetStartFrame())
+    except Exception:
+        start = 0
+    return frame - start
 
 # Log goes to %APPDATA%/<app>/logs/ when available (so packaged installs
 # don't need to write into Program Files). We try the current app name
@@ -620,7 +635,12 @@ def ensure_timeline(project, timeline_name):
 
 def append_to_v2(media_pool, mpi, fps, record_frame, track_index, duration_frames):
     """Insert mpi onto the given track at record_frame for duration_frames.
-    Returns a list of TimelineItem handles for the newly-placed clip(s), or []."""
+    Returns a list of TimelineItem handles for the newly-placed clip(s), or [].
+
+    `record_frame` MUST be timeline-relative (frame 0 = first frame of
+    the timeline regardless of timecode start). See `_playhead_frame`
+    docstring for the dev66 fix that surfaced this contract.
+    """
     # Resolve uses mediaType=1 for video, 2 for audio.
     clip_info = {
         "mediaPoolItem": mpi,
@@ -630,6 +650,14 @@ def append_to_v2(media_pool, mpi, fps, record_frame, track_index, duration_frame
         "trackIndex":    int(track_index),
         "recordFrame":   int(record_frame),
     }
+    # dev66 — log the recordFrame + trackIndex we're about to use. The
+    # pre-dev66 silence here is what made Faah's off-screen-clip case
+    # hard to diagnose from logs alone — the call returned success and
+    # we just trusted it. Now the log tells us exactly where the clip
+    # was supposed to land.
+    log("AppendToTimeline call: trackIndex=%d recordFrame=%d "
+        "(timeline-relative) duration_frames=%d fps=%.2f"
+        % (int(track_index), int(record_frame), int(duration_frames), float(fps)))
     result = media_pool.AppendToTimeline([clip_info])
     log("AppendToTimeline result: " + str(result))
     # AppendToTimeline returns list[TimelineItem] on success, False/None on fail.

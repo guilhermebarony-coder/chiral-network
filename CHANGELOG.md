@@ -13,6 +13,136 @@ bumps may break disk format).
 
 ---
 
+## [0.5.0-dev66] — 2026-05-10 — **`_playhead_frame` returned absolute frame, AppendToTimeline needed relative**
+
+dev65 unblocked Faah's import crash — his first successful end-to-end
+relink in the entire saga. Python side did everything right:
+
+```
+About to call dvr.scriptapp('Resolve')...
+scriptapp returned: <Resolve handle>
+Timeline: A VERDADEIRA idade dos personagens de Dr. Stone
+Imported. UniqueId=83e4e233-…
+AppendToTimeline result: [<BlackmagicFusion.PyRemoteObject …>]   ← success
+Colored 1 timeline item(s) -> Yellow
+==== relink_latest_render DONE OK ====
+```
+
+**But Faah didn't see the inserted clip in his timeline.** Media Pool
+had the rendered file, the API said a TimelineItem was created and
+colored, yet visually the timeline showed nothing on V2.
+
+### Cause: contract mismatch between the playhead path and AppendToTimeline
+
+Two functions disagreed about whether `recordFrame` is timeline-relative
+or absolute:
+
+- **`export_range.py`** (line 779–781) computes
+  `fi_rel = fi_abs - timeline.GetStartFrame()` before writing `markIn`
+  to `job.json`. So `markIn` IS relative.
+- **`relink_latest_render.py` `_playhead_frame`** returned `frame`
+  (absolute, includes the timeline-start TC offset) with a comment that
+  *claimed* AppendToTimeline expects absolute. That claim was wrong.
+
+`AppendToTimeline`'s `recordFrame` is timeline-relative — frame 0 is the
+first frame of the timeline regardless of TC start. Every Blackmagic SDK
+example confirms this, and `export_range.py` itself is consistent with it.
+
+When `ae_first_render` is true (origin == "ae" AND no
+`resolveMediaPoolItemId` yet — Faah's case), `record_frame` was set
+to the absolute playhead frame. For a 24fps timeline starting at the
+Resolve default `01:00:00:00`, that's frame **86400**.
+`AppendToTimeline(recordFrame=86400)` placed Faah's clip 1 hour past
+the timeline start — way off-screen, visible to the API but not to
+the human.
+
+Guilherme never hit this because his typical flow goes through
+`export_range.py` → `markIn` is already relative → `record_frame = mark_in`
+on the non-playhead branch (line 890). The `at_playhead`/`ae_first_render`
+branch is where the bug lived.
+
+### Fix
+
+`_playhead_frame` now subtracts `GetStartFrame()` before returning, so
+it produces a timeline-relative frame consistent with what
+AppendToTimeline expects and with what export_range already writes.
+
+```python
+start = int(timeline.GetStartFrame())
+return frame - start
+```
+
+Plus a comment block explaining the contract for future maintainers.
+
+### Better logging at the call site
+
+`append_to_v2` now logs the exact `trackIndex` + `recordFrame` +
+`duration_frames` + `fps` before invoking `AppendToTimeline`. Pre-dev66
+silence here is what made this category of bug hard to diagnose — the
+call returned success and we just trusted it. Now any future
+"successful API call, no visible clip" mystery has the actual numbers
+in the log within one line.
+
+### Recovery for existing broken shots
+
+The fix corrects all future first-render inserts. For shots that
+already AppendToTimeline'd at the wrong frame (Faah's `Shot_001`):
+
+The orphan clip is still on the timeline 1 hour past the start.
+Recovery options:
+
+1. **Scrub far right** (Ctrl+End in Resolve's timeline panel) — the
+   orphan clip will be at the 1-hour mark on V2. Cut it, paste it
+   where you want, or delete it.
+2. Or **delete the shot in Chiral and recreate it** — fresh
+   `job.json` with no `resolveMediaPoolItemId` → next relink takes
+   the first-render path under the dev66 fix → clip lands at the
+   correct relative frame.
+
+Subsequent ReplaceClip calls on the orphan would have continued to
+rebind that off-screen clip rather than fixing the position — that's
+why dev65's "Set as Active Version" path (which also goes through
+ReplaceClip) didn't help Faah either.
+
+### What testers see in dev66 logs
+
+A new line right before AppendToTimeline:
+```
+AppendToTimeline call: trackIndex=2 recordFrame=120 (timeline-relative) duration_frames=144 fps=24.00
+```
+
+(Numbers are illustrative — the point is they're now visible.)
+
+For Faah on his next relink (after recovery), `recordFrame` will be a
+small value (under a few thousand) instead of 86400+.
+
+### Versions
+
+- `SCRIPT_VERSION` → `0.5.0-dev20`
+- `app/package.json` → `0.5.0-dev66`
+
+Tests unchanged — this is a Python-side script fix; no JS-side changes
+to detect.js or the picker. 162/162 still pass.
+
+### Files touched
+
+- `scripts/resolve/relink_latest_render.py` — `_playhead_frame` now
+  returns timeline-relative; `append_to_v2` logs call parameters.
+- `scripts/resolve/chiral_version.py` — `SCRIPT_VERSION` dev20.
+- `app/package.json` — `0.5.0-dev66`.
+
+### Status across testers
+
+| Tester | dev65 → dev66                                       |
+|--------|-----------------------------------------------------|
+| Guilherme | unchanged (markIn path; never hit the bug)       |
+| Seih    | dev65 routed him to system 3.14 — expected to work |
+| **Faah** | **dev66 fixes the off-screen-clip case**         |
+| rafag   | probe still needed                                  |
+| Levi    | probe still needed                                  |
+
+---
+
 ## [0.5.0-dev65] — 2026-05-10 — **🎯 Registered Python wins: embeddable is the problem**
 
 Probe v2 from two testers (Seih on Resolve 20.2.2, Faah on Resolve
