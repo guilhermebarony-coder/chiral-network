@@ -13,6 +13,144 @@ bumps may break disk format).
 
 ---
 
+## [0.5.0-dev65] — 2026-05-10 — **🎯 Registered Python wins: embeddable is the problem**
+
+Probe v2 from two testers (Seih on Resolve 20.2.2, Faah on Resolve
+20.3.2) made the pattern crystal clear:
+
+| Tester       | Resolve  | Vendored 3.10 | Vendored 3.13 | System Python  |
+|--------------|----------|---------------|---------------|----------------|
+| Guilherme    | 21.0.0.28| crash         | **OK**        | 3.13 → OK      |
+| Seih         | 20.2.2   | **crash**     | **crash**     | 3.14 → **OK**  |
+| Faah         | 20.3.2   | **crash**     | **crash**     | 3.12 → **OK**  |
+
+**Every system-installed Python imports fusionscript cleanly on every
+machine tested. Every vendored embeddable crashes on Resolve 20.x.**
+The variable was never Python version, it was always embeddable-vs-full.
+
+### Theory (best fit to the evidence)
+
+fusionscript's PyInit on Resolve 20.x consults
+`HKLM/HKCU\Software\Python\PythonCore` to locate a "real" Python
+install and dereferences something the embeddable's vendor layout
+doesn't satisfy. Likely a sibling `pythonXY.dll` lookup or a
+stdlib resource path. Guilherme's machine accidentally satisfies
+the lookup because his system 3.13 + 3.10 are registered alongside
+the embeddable. Testers without a system Python see the registered
+embeddable, but the registered embeddable's `sys.prefix` doesn't
+point at a complete install layout, so the lookup fails inside the
+DLL's static initializer or PyInit callback.
+
+### Fix: prefer registered system Python; embeddable is fallback
+
+`app/lib/detect.js` `detectPython(appRoot, libPath)` priority order:
+
+1. **Registered system Python** via `HKCU/HKLM\Software\Python\
+   PythonCore\<X.Y>\InstallPath` (new — empirically the only path
+   that consistently works on Resolve 20.x).
+2. Vendored embeddable matching the ABI picker (`python310` for
+   Resolve <21, `python313` for Resolve 21+).
+3. Other vendored embeddable as fallback if the picker's choice is
+   missing.
+4. PATH-based discovery (`py` / `python` / `python3`).
+
+ABI floor for the registry lookup is driven by `pickVendoredPythonDir`:
+- picker = python310 (Resolve <21) → accept registered Python ≥ 3.10
+- picker = python313 (Resolve 21+) → accept registered Python ≥ 3.11
+  (because 3.10 access-violates on Resolve 21 per Guilherme's probe)
+
+### New helper: `findRegisteredPython(minMinor)`
+
+Walks both HKCU and HKLM `\Software\Python\PythonCore\*` blocks via
+`reg query /s`, extracts each `\<ver>\InstallPath`'s default value,
+returns the highest-minor install ≥ `minMinor` with a valid
+`python.exe`. Dedupes by exe path so an install registered in both
+hives counts once.
+
+### Locale bug — `(Default)` is localized
+
+First implementation matched `\(Default\)\s+REG_SZ` in the `reg
+query` output. Brazilian Portuguese Windows actually prints
+`(padrão)`; German prints `(Standard)`; Chinese prints `(默认)`.
+The localized label broke the regex silently — `findRegisteredPython`
+returned `null` on Guilherme's Portuguese Windows even with Python
+3.13 visibly registered.
+
+Fix: match by structural position. The first `REG_SZ` line in the
+`InstallPath` subkey block IS the default value; the parenthesized
+label inside `(…)` is decorative. Pattern is now
+`^\s*\([^)]+\)\s+REG_SZ\s+([^\r\n]+)` which works in every locale
+because we don't care what's between the parens.
+
+### Widened supported range
+
+`SUPPORTED_PYTHON.maxMinor`: 13 → 14. We don't ship a 3.14
+embeddable, but Seih's registered 3.14 imports fusionscript cleanly
+on Resolve 20.2.2, so we accept it when found in the registry. The
+embeddable pair stays at 3.10 / 3.13.
+
+`scripts/resolve/chiral_version.py`: `PY_MAX` 13 → 14. Mirrors the
+JS-side widening; the Python warning gate now allows 3.14.
+
+### What testers should see in dev65
+
+Seih's next `relink.log`:
+```
+sys.executable: C:\Users\Seih\AppData\Local\Programs\Python\Python314\python.exe
+```
+(registered HKCU 3.14 → routed by `findRegisteredPython` → import succeeds)
+
+Faah's next `relink.log`:
+```
+sys.executable: C:\Users\faahb\AppData\Local\Programs\Python\Python312\python.exe
+```
+(registered HKCU 3.12 → routed by `findRegisteredPython` → import succeeds)
+
+Guilherme: status unchanged — his Resolve 21 + system 3.13 already
+worked, but he'll now also be routed through the registered system
+3.13 (preferred over embeddable for consistency across testers).
+
+### What testers WITHOUT a registered Python see
+
+The relink falls through to vendored embeddable as before. The
+status-strip error and dev57 faulthandler dump still surface the
+access violation. We add a follow-up Setup-Wizard hint in dev66
+suggesting they install Python 3.13 from python.org with
+"Add Python to PATH" + "Register for all users" checked.
+
+### Tests
+
+- `SUPPORTED_PYTHON.maxMinor` assertion bumped 13 → 14.
+- New row in `isPythonInSupportedRange: boundaries` for 3.14 in-range.
+- `parse + range: realistic end-to-end flow` upper bound shifted
+  3.14 → 3.15 (so the "out of range" case still tests something).
+- Existing picker tests unchanged; the import-string + version
+  heuristic survives.
+
+**162/162** passing.
+
+### Files touched
+
+- `app/lib/detect.js` — new `findRegisteredPython()` helper,
+  `detectPython` priority order flipped, `SUPPORTED_PYTHON.maxMinor`
+  widened to 14, locale-resilient regex for the default-value line.
+- `app/test/python_version.test.js` — three assertion updates.
+- `scripts/resolve/chiral_version.py` — `PY_MAX` 13 → 14;
+  `SCRIPT_VERSION` → `0.5.0-dev19`.
+- `app/package.json` — `0.5.0-dev65`.
+
+### Status across testers
+
+| Tester       | Status after dev65                              |
+|--------------|-------------------------------------------------|
+| Guilherme    | unchanged (still working)                       |
+| Seih         | **expected to work** (system 3.14 will be used) |
+| Faah         | **expected to work** (system 3.12 will be used) |
+| rafag        | depends on his registered-Python state — probe needed |
+| Levi         | depends on his registered-Python state — probe needed |
+
+---
+
 ## [0.5.0-dev64] — 2026-05-09 — **Picker: validate VS_FIXEDFILEINFO match (dev63 was misrouting)**
 
 dev63 didn't actually fix Seih. His dev63 log:

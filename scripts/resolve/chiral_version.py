@@ -14,7 +14,7 @@
 #     mark validation, dialog wording).
 #   * Don't bump for pure-comment / log-string edits.
 
-SCRIPT_VERSION = "0.5.0-dev18"
+SCRIPT_VERSION = "0.5.0-dev19"
 SCRIPT_NAME    = "Chiral Network — Resolve scripts"
 
 # Supported Python range. dev60 — re-widened from (3,10)..(3,10) to
@@ -38,4 +38,4 @@ SCRIPT_NAME    = "Chiral Network — Resolve scripts"
 #          — opposite failure mode of dev48. Two shipping versions,
 #          one heuristic picker.
 PY_MIN = (3, 10)
-PY_MAX = (3, 13)
+PY_MAX = (3, 14)   # dev65: widened to 3.14 after Seih's deep probe

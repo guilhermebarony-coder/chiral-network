@@ -188,8 +188,12 @@ function detectFFmpeg(appRoot) {
 // at startup and tell the user which Python to install.
 const SUPPORTED_PYTHON = Object.freeze({
     minMajor: 3, minMinor: 10,
-    maxMajor: 3, maxMinor: 13,
-    label: '3.10 – 3.13',
+    // dev65 — widened max from 3.13 to 3.14 after the deep-probe
+    // surfaced that Faah's system Python 3.12 and Seih's system
+    // Python 3.14 both import fusionscript cleanly. We don't ship a
+    // 3.14 embeddable, but we accept registered 3.14 system installs.
+    maxMajor: 3, maxMinor: 14,
+    label: '3.10 – 3.14',
 });
 
 // dev60 — Resolve major versions ship fusionscript.dll built against
@@ -377,27 +381,119 @@ function _probePythonVersion(cmd) {
     }
 }
 
-// Priority: bundled embeddable at <appRoot>/vendor/python/python.exe (if
-// present AND in-range) → system Python (`py` / `python` / `python3`, first
-// in-range hit wins). The old "system first" order was flipped in rc4 — a
-// known-good bundled runtime we control is safer than the tester's PATH.
+// dev65 — find the best registered Python install via the Windows
+// registry. fusionscript's PyInit empirically NEEDS a full Python
+// install on Resolve 20.x: probe v2 showed both testers' vendored
+// pythons access-violate while their system-installed pythons import
+// clean. Likely cause: fusionscript consults HKLM/HKCU PythonCore at
+// PyInit to find a "real" Python and dereferences something the
+// embeddable's vendor layout doesn't provide.
 //
-// Returns { path, source, version, inRange, tried[] }.
+// Returns { path: python.exe, version: 'X.Y', minor: N } or null.
+// Prefers the highest minor version that satisfies the ABI floor.
+function findRegisteredPython(minMinor) {
+    const candidates = [];   // [{ minor, exe, version }]
+
+    const tryReg = (hive) => {
+        try {
+            const out = execFileSync('reg', ['query',
+                hive + '\\Software\\Python\\PythonCore', '/s'],
+                { timeout: 3000, windowsHide: true, encoding: 'utf8',
+                  stdio: ['ignore', 'pipe', 'ignore'] });
+            // The `reg query` output groups each subkey block with its
+            // values. We scan for any `\Software\Python\PythonCore\<ver>\
+            // InstallPath` block and pull the default value.
+            //
+            // Localization gotcha: `reg query` prints the default value
+            // line with a LOCALIZED label — `(Default)` in English,
+            // `(padrão)` on Portuguese Windows, `(Standard)` on German,
+            // `(默认)` on Chinese, etc. The brackets are universal but
+            // the word inside isn't. We match by structural position
+            // (the FIRST REG_SZ line within the InstallPath block) so
+            // the locale doesn't matter.
+            const blockRe = /HKEY_[A-Z_]+\\Software\\Python\\PythonCore\\([0-9]+\.[0-9]+)(?:-[0-9]+)?\\InstallPath\s*\r?\n([^]+?)(?=HKEY_|$)/gi;
+            let m;
+            while ((m = blockRe.exec(out)) !== null) {
+                const verStr = m[1];
+                const blockBody = m[2];
+                // First REG_SZ line in this subkey block is the default
+                // value. Match `<whitespace>(<anything>) REG_SZ <value>`
+                // where the parenthesized label is locale-dependent
+                // (Default / padrão / Standard / 默认 / …) and we don't
+                // care which.
+                const dv = blockBody.match(
+                    /^\s*\([^)]+\)\s+REG_SZ\s+([^\r\n]+)/m);
+                if (!dv) continue;
+                const installPath = dv[1].trim();
+                if (!installPath) continue;
+                const exe = path.join(installPath, 'python.exe');
+                if (!fs.existsSync(exe)) continue;
+                const parts = verStr.split('.');
+                const minor = parseInt(parts[1], 10);
+                if (Number.isNaN(minor)) continue;
+                if (minor < minMinor) continue;
+                // Dedupe by exe path (HKCU and HKLM may both register
+                // the same install).
+                if (candidates.some(c => c.exe.toLowerCase() === exe.toLowerCase())) continue;
+                candidates.push({ minor, exe, version: verStr });
+            }
+        } catch (_) {
+            /* hive absent / blocked — try next */
+        }
+    };
+    tryReg('HKCU');
+    tryReg('HKLM');
+
+    if (!candidates.length) return null;
+    // Prefer highest minor that satisfies the floor. Highest minor is
+    // newest, generally most compatible, and the empirical data shows
+    // newer Python (3.12, 3.13, 3.14) consistently works on Resolve.
+    candidates.sort((a, b) => b.minor - a.minor);
+    return candidates[0];
+}
+
+// Priority: registered system Python (Resolve's preferred discovery path)
+// → vendored embeddable matching the ABI picker → vendored embeddable
+// fallback → system PATH (py/python/python3).
+//
+// dev65 — flipped registered-system-first because the embeddable
+// distribution empirically crashes fusionscript's PyInit on Resolve
+// 20.x (Seih, Faah). Embeddable still functions on Resolve 21+
+// (Guilherme), and stays as the fallback for testers without any
+// registered Python at all.
+//
+// Returns { path, source, version, inRange, vendorDir?, tried[] }.
 // * `version` is {major, minor, patch, full} or null.
 // * `inRange` is true iff the returned version ∈ supported range.
+// * `vendorDir` is set when source is 'bundled' / 'bundled-fallback'.
 // * `tried` lists every candidate probed (for diagnostic logging).
 // When nothing in-range is found but SOMETHING runs, the out-of-range best
-// hit is returned so callers can paint a precise error ("Python 3.14 found
-// but needs 3.10-3.13") instead of the ambiguous "missing".
+// hit is returned so callers can paint a precise error.
 function detectPython(appRoot, libPath) {
     const tried = [];
 
+    // dev60 — pick ABI vendor by reading fusionscript.dll's imports +
+    // FileVersion. python310 → Resolve <21; python313 → Resolve 21+.
+    // dev65 — this also dictates the MIN system Python minor we accept:
+    //   python310 (Resolve <21) → ≥ 3.10
+    //   python313 (Resolve 21+) → ≥ 3.11 (because 3.10 access-violates
+    //                                       on Resolve 21 per our probe)
+    const dir = pickVendoredPythonDir(libPath);
+    const minMinor = (dir === 'python310') ? 10 : 11;
+
+    // 1. Registered system Python — preferred (see comment above).
+    const sys = findRegisteredPython(minMinor);
+    if (sys) {
+        const v = _probePythonVersion(sys.exe);
+        const inRange = isPythonInSupportedRange(v);
+        tried.push({ path: sys.exe, source: 'registry', version: v, inRange });
+        if (inRange) {
+            return { path: sys.exe, source: 'registry', version: v, inRange: true, tried };
+        }
+    }
+
+    // 2. Vendored embeddable matching the ABI pick.
     if (appRoot) {
-        // dev60 — pick between vendor/python310 and vendor/python313 by
-        // reading fusionscript.dll's import strings. The picker defaults
-        // to python313 if libPath is missing or unreadable, so this stays
-        // working when callers don't pass libPath (legacy callers + tests).
-        const dir = pickVendoredPythonDir(libPath);
         const bundled = path.join(appRoot, 'vendor', dir, 'python.exe');
         if (fs.existsSync(bundled)) {
             const v = _probePythonVersion(bundled);
@@ -407,11 +503,7 @@ function detectPython(appRoot, libPath) {
                 return { path: bundled, source: 'bundled', version: v, inRange: true, vendorDir: dir, tried };
             }
         }
-        // Fallback — if the chosen vendor dir is missing for any reason
-        // (manual deletion, half-extracted vendor.zip), try the OTHER
-        // one before giving up. Better to relink with the wrong Python
-        // and surface the clear faulthandler error than to fail at
-        // detection time with no diagnostic.
+        // 3. Other vendored embeddable as fallback.
         const alt = dir === 'python313' ? 'python310' : 'python313';
         const altPath = path.join(appRoot, 'vendor', alt, 'python.exe');
         if (fs.existsSync(altPath)) {
@@ -424,6 +516,7 @@ function detectPython(appRoot, libPath) {
         }
     }
 
+    // 4. PATH-based discovery (last resort — same as the pre-dev65 fallback).
     for (const cmd of ['py', 'python', 'python3']) {
         const v = _probePythonVersion(cmd);
         if (!v) continue;
@@ -522,4 +615,7 @@ module.exports = {
     // import-string heuristic against fixture .dll buffers).
     pickVendoredPythonDir,
     clearVendoredPythonCache,
+    // dev65 — registry-Python finder (exported for diagnostic logging
+    // in main.js and for tests).
+    findRegisteredPython,
 };

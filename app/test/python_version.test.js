@@ -43,20 +43,24 @@ test('parsePythonVersionString: garbage / empty / null', () => {
 test('isPythonInSupportedRange: boundaries', () => {
     // Documented range: 3.10 – 3.13 inclusive.
     assert.equal(SUPPORTED_PYTHON.minMinor, 10);
-    assert.equal(SUPPORTED_PYTHON.maxMinor, 13);
+    assert.equal(SUPPORTED_PYTHON.maxMinor, 14);   // dev65: widened from 13
 
     // In range
     assert.equal(isPythonInSupportedRange({ major: 3, minor: 10, patch: 0 }), true);
     assert.equal(isPythonInSupportedRange({ major: 3, minor: 11, patch: 9 }), true);
     assert.equal(isPythonInSupportedRange({ major: 3, minor: 12, patch: 0 }), true);
     assert.equal(isPythonInSupportedRange({ major: 3, minor: 13, patch: 99 }), true);
+    // dev65 — Seih's system Python 3.14 imports fusionscript clean,
+    // so 3.14 is now in-range (was rejected before dev65 widened
+    // SUPPORTED_PYTHON.maxMinor from 13 to 14).
+    assert.equal(isPythonInSupportedRange({ major: 3, minor: 14, patch: 4 }), true);
 
     // Below
     assert.equal(isPythonInSupportedRange({ major: 3, minor: 9,  patch: 19 }), false);
     assert.equal(isPythonInSupportedRange({ major: 2, minor: 7,  patch: 0  }), false);
 
     // Above — the tester's bug
-    assert.equal(isPythonInSupportedRange({ major: 3, minor: 14, patch: 0 }), false);
+    assert.equal(isPythonInSupportedRange({ major: 3, minor: 15, patch: 0 }), false);
     assert.equal(isPythonInSupportedRange({ major: 4, minor: 0,  patch: 0 }), false);
 
     // Null / undefined
@@ -66,7 +70,7 @@ test('isPythonInSupportedRange: boundaries', () => {
 
 test('parse + range: realistic end-to-end flow', () => {
     const ok  = parsePythonVersionString('Python 3.12.4');
-    const bad = parsePythonVersionString('Python 3.14.0');
+    const bad = parsePythonVersionString('Python 3.15.0');   // dev65: was 3.14
     assert.equal(isPythonInSupportedRange(ok),  true);
     assert.equal(isPythonInSupportedRange(bad), false);
 });
